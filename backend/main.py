@@ -504,6 +504,29 @@ def get_iteration_info(project_id):
     })
 
 
+@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
+def delete_project(project_id):
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        # Delete all citations associated with the project
+        Citation.query.filter_by(project_id=project_id).delete()
+        
+        # Delete the project
+        db.session.delete(project)
+        db.session.commit()
+
+        return jsonify({"message": "Project deleted successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
+
 @app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
 def get_labeled_citations(project_id):
     user_id = request.headers.get('X-User-Id')
