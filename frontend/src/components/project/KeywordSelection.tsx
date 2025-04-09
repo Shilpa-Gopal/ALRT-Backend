@@ -6,6 +6,7 @@ import axios from 'axios';
 export default function KeywordSelection() {
   const [includeKeywords, setIncludeKeywords] = useState<string[]>([]);
   const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
+  const [suggestedKeywords, setSuggestedKeywords] = useState<Array<{word: string, score: number}>>([]);
   const [newKeyword, setNewKeyword] = useState('');
   const { id } = useParams();
   const navigate = useNavigate();
@@ -16,8 +17,9 @@ export default function KeywordSelection() {
       const response = await axios.get(`/api/projects/${id}/keywords`, {
         headers: { 'X-User-Id': userId }
       });
-      setIncludeKeywords(response.data.include || []);
-      setExcludeKeywords(response.data.exclude || []);
+      setIncludeKeywords(response.data.selected_keywords?.include || []);
+      setExcludeKeywords(response.data.selected_keywords?.exclude || []);
+      setSuggestedKeywords(response.data.suggested_keywords || []);
     };
     fetchKeywords();
   }, [id]);
@@ -47,8 +49,21 @@ export default function KeywordSelection() {
       <h1 className="text-2xl font-bold mb-6">Select Keywords</h1>
       <div className="space-y-6">
         <div>
+          <h3 className="text-lg font-medium mb-4">Suggested Keywords</h3>
+          <div className="flex flex-wrap gap-2 mb-6">
+            {suggestedKeywords.map((keyword, index) => (
+              <button
+                key={index}
+                onClick={() => handleAddKeyword('include', keyword.word)}
+                className="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm"
+                title={`Relevance score: ${keyword.score.toFixed(3)}`}
+              >
+                {keyword.word}
+              </button>
+            ))}
+          </div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Add Keywords
+            Add Custom Keywords
           </label>
           <div className="flex gap-2">
             <input
