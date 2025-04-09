@@ -1,5 +1,7 @@
 
-from flask import Flask, jsonify, request, abort
+from flask import Flask, jsonify, request, abort, send_file
+import io
+import xlsxwriter
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import create_app, db
 from app.models import User, Project, Citation
@@ -284,6 +286,44 @@ def filter_citations(project_id):
             "iteration": c.iteration
         } for c in citations]
     })
+
+@app.route('/api/projects/<int:project_id>/download', methods=['GET'])
+def download_results(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    citations = Citation.query.filter_by(project_id=project_id).all()
+    
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output)
+    worksheet = workbook.add_worksheet()
+    
+    # Write headers
+    headers = ['Title', 'Abstract', 'Is Relevant', 'Iteration', 'Relevance Score']
+    for col, header in enumerate(headers):
+        worksheet.write(0, col, header)
+    
+    # Write data
+    for row, citation in enumerate(citations, start=1):
+        worksheet.write(row, 0, citation.title)
+        worksheet.write(row, 1, citation.abstract)
+        worksheet.write(row, 2, 'Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified')
+        worksheet.write(row, 3, citation.iteration)
+        
+    workbook.close()
+    output.seek(0)
+    
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=f'project_{project_id}_results.xlsx'
+    )
 
 @app.route('/api/projects/<int:project_id>/predict', methods=['POST'])
 def predict_citations(project_id):
