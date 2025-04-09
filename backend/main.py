@@ -509,23 +509,38 @@ def delete_project(project_id):
     try:
         user_id = request.headers.get('X-User-Id')
         if not user_id:
-            return jsonify({"error": "Unauthorized"}), 401
+            return jsonify({"error": "Unauthorized", "code": "AUTH_ERROR"}), 401
 
         project = Project.query.filter_by(id=project_id, user_id=user_id).first()
         if not project:
-            return jsonify({"error": "Project not found"}), 404
+            return jsonify({"error": "Project not found", "code": "NOT_FOUND"}), 404
 
-        # Delete all citations associated with the project
-        Citation.query.filter_by(project_id=project_id).delete()
-        
-        # Delete the project
-        db.session.delete(project)
-        db.session.commit()
+        try:
+            # Delete all citations associated with the project
+            Citation.query.filter_by(project_id=project_id).delete()
+            
+            # Delete the project
+            db.session.delete(project)
+            db.session.commit()
 
-        return jsonify({"message": "Project deleted successfully"}), 200
+            return jsonify({"message": "Project deleted successfully"}), 200
+            
+        except Exception as db_error:
+            db.session.rollback()
+            app.logger.error(f"Database error while deleting project {project_id}: {str(db_error)}")
+            return jsonify({
+                "error": "Database error while deleting project",
+                "code": "DB_ERROR",
+                "details": str(db_error)
+            }), 500
+
     except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
+        app.logger.error(f"Unexpected error while handling project deletion {project_id}: {str(e)}")
+        return jsonify({
+            "error": "Failed to process deletion request",
+            "code": "SERVER_ERROR",
+            "details": str(e)
+        }), 500
 
 @app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
 def get_labeled_citations(project_id):
