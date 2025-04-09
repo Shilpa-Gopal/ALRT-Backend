@@ -15,7 +15,7 @@ with app.app_context():
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"message": "Literature Review API is running", "status": "healthy"}), 200
+    return '', 200
 
 @app.route('/api/auth/signup', methods=['POST'])
 def signup():
