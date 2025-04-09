@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
 interface Project {
@@ -12,17 +12,28 @@ interface Project {
 
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const navigate = useNavigate();
 
   useEffect(() => {
+    const userId = localStorage.getItem('userId');
+    if (!userId) {
+      navigate('/login');
+      return;
+    }
+
     const fetchProjects = async () => {
-      const userId = localStorage.getItem('userId');
-      const response = await axios.get('/api/projects', {
-        headers: { 'X-User-Id': userId }
-      });
-      setProjects(response.data.projects);
+      try {
+        const response = await axios.get('/api/projects', {
+          headers: { 'X-User-Id': userId }
+        });
+        setProjects(response.data.projects);
+      } catch (error) {
+        console.error('Failed to fetch projects:', error);
+      }
     };
+
     fetchProjects();
-  }, []);
+  }, [navigate]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

@@ -1,11 +1,12 @@
 
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -14,8 +15,8 @@ export default function Login() {
       const response = await axios.post('/api/auth/login', { email, password });
       localStorage.setItem('userId', response.data.user.id);
       navigate('/home');
-    } catch (error) {
-      alert('Invalid credentials');
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to login');
     }
   };
 
@@ -23,6 +24,11 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-lg shadow">
         <h2 className="text-3xl font-bold text-center">Sign in</h2>
+        {error && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+            {error}
+          </div>
+        )}
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div>
             <input
@@ -51,6 +57,11 @@ export default function Login() {
             Sign in
           </button>
         </form>
+        <div className="text-center">
+          <Link to="/signup" className="text-blue-600 hover:text-blue-800">
+            Don't have an account? Sign up
+          </Link>
+        </div>
       </div>
     </div>
   );
