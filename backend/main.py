@@ -85,31 +85,49 @@ def get_projects():
 
 @app.route('/api/projects', methods=['POST'])
 def create_project():
-    user_id = request.headers.get('X-User-Id')
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        app.logger.info("Received project creation request")
+        app.logger.info(f"Headers: {dict(request.headers)}")
+        
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            app.logger.error("No user ID in request headers")
+            return jsonify({"error": "Unauthorized"}), 401
 
-    data = request.get_json()
-    if 'name' not in data:
-        return jsonify({"error": "Project name is required"}), 400
+        data = request.get_json()
+        app.logger.info(f"Request data: {data}")
+        
+        if not data:
+            app.logger.error("No JSON data received")
+            return jsonify({"error": "No data provided"}), 400
+            
+        if 'name' not in data:
+            app.logger.error("No project name in request data")
+            return jsonify({"error": "Project name is required"}), 400
 
-    project = Project(name=data['name'],
-                      user_id=user_id,
-                      keywords={
-                          "include": [],
-                          "exclude": []
-                      })
-    db.session.add(project)
-    db.session.commit()
-
-    return jsonify({
-        "project": {
-            "id": project.id,
-            "name": project.name,
-            "created_at": project.created_at,
-            "current_iteration": project.current_iteration
-        }
-    }), 201
+        project = Project(name=data['name'],
+                        user_id=user_id,
+                        keywords={
+                            "include": [],
+                            "exclude": []
+                        })
+        db.session.add(project)
+        db.session.commit()
+        
+        app.logger.info(f"Project created successfully with ID: {project.id}")
+        return jsonify({
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+                "current_iteration": project.current_iteration
+            }
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f"Project creation error: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to create project", "details": str(e)}), 500
 
 
 @app.route('/api/projects/<int:project_id>/citations', methods=['POST'])
