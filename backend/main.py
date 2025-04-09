@@ -112,53 +112,94 @@ def create_project():
 
 @app.route('/api/projects/<int:project_id>/citations', methods=['POST'])
 def add_citations(project_id):
-    user_id = request.headers.get('X-User-Id')
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
 
-    if 'file' not in request.files:
-        data = request.get_json()
-        if not isinstance(data.get('citations'), list):
-            return jsonify({"error": "Citations must be a list"}), 400
-
-        new_citations = []
-        for citation_data in data['citations']:
-            citation = Citation(title=citation_data['title'],
-                                abstract=citation_data['abstract'],
-                                project_id=project_id,
-                                iteration=project.current_iteration)
-            new_citations.append(citation)
-    else:
-        file = request.files['file']
-        if not file.filename.endswith(('.csv', '.xlsx')):
-            return jsonify({"error":
-                            "Only CSV and Excel files are supported"}), 400
-
-        try:
-            if file.filename.endswith('.csv'):
-                df = pd.read_csv(file)
-            else:
-                df = pd.read_excel(file)
-
-            if 'title' not in df.columns or 'abstract' not in df.columns:
-                return jsonify({
-                    "error":
-                    "File must contain 'title' and 'abstract' columns"
-                }), 400
+        if 'file' not in request.files:
+            data = request.get_json()
+            if not isinstance(data.get('citations'), list):
+                return jsonify({"error": "Citations must be a list"}), 400
 
             new_citations = []
-            for _, row in df.iterrows():
-                citation = Citation(title=row['title'],
-                                    abstract=row['abstract'],
+            for citation_data in data['citations']:
+                citation = Citation(title=citation_data['title'],
+                                    abstract=citation_data['abstract'],
                                     project_id=project_id,
                                     iteration=project.current_iteration)
                 new_citations.append(citation)
+        else:
+            file = request.files['file']
+            if not file:
+                return jsonify({"error": "No file provided"}), 400
+                
+            if not file.filename:
+                return jsonify({"error": "No filename provided"}), 400
+
+            if not file.filename.endswith(('.csv', '.xlsx')):
+                return jsonify({
+                    "error": "Invalid file format. Only CSV and Excel files are supported.",
+                    "filename": file.filename
+                }), 400
+
+            try:
+                if file.filename.endswith('.csv'):
+                    df = pd.read_csv(file)
+                else:
+                    df = pd.read_excel(file)
+
+                if df.empty:
+                    return jsonify({"error": "File contains no data"}), 400
+
+                if 'title' not in df.columns or 'abstract' not in df.columns:
+                    return jsonify({
+                        "error": "File must contain 'title' and 'abstract' columns",
+                        "found_columns": list(df.columns)
+                    }), 400
+
+                new_citations = []
+                for _, row in df.iterrows():
+                    citation = Citation(title=str(row['title']),
+                                        abstract=str(row['abstract']),
+                                        project_id=project_id,
+                                        iteration=project.current_iteration)
+                    new_citations.append(citation)
+            except pd.errors.EmptyDataError:
+                return jsonify({"error": "The uploaded file is empty"}), 400
+            except Exception as e:
+                app.logger.error(f"File processing error: {str(e)}")
+                return jsonify({
+                    "error": "Failed to process file",
+                    "details": str(e)
+                }), 400
+
+        if not new_citations:
+            return jsonify({"error": "No valid citations found in file"}), 400
+
+        try:
+            db.session.bulk_save_objects(new_citations)
+            db.session.commit()
         except Exception as e:
-            return jsonify({"error": f"Failed to process file: {str(e)}"}), 400
+            db.session.rollback()
+            app.logger.error(f"Database error: {str(e)}")
+            return jsonify({
+                "error": "Failed to save citations to database",
+                "details": str(e)
+            }), 500
+
+        return jsonify({"message": f"Added {len(new_citations)} citations"}), 201
+
+    except Exception as e:
+        app.logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({
+            "error": "Internal server error",
+            "details": str(e)
+        }), 500
 
     db.session.bulk_save_objects(new_citations)
     db.session.commit()
