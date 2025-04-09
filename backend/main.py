@@ -253,31 +253,39 @@ def add_citations(project_id):
 @app.route('/api/projects/<int:project_id>/citations/<int:citation_id>',
            methods=['PUT'])
 def update_citation(project_id, citation_id):
-    user_id = request.headers.get('X-User-Id')
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
 
-    citation = Citation.query.filter_by(id=citation_id,
-                                        project_id=project_id).first()
-    if not citation:
-        return jsonify({"error": "Citation not found"}), 404
+        citation = Citation.query.filter_by(id=citation_id,
+                                          project_id=project_id).first()
+        if not citation:
+            return jsonify({"error": "Citation not found"}), 404
 
-    data = request.get_json()
-    if 'is_relevant' in data:
-        citation.is_relevant = data['is_relevant']
-        db.session.commit()
+        data = request.get_json()
+        if 'is_relevant' in data:
+            citation.is_relevant = data['is_relevant']
+            db.session.commit()
+            app.logger.info(f"Updated citation {citation_id} relevance to {data['is_relevant']}")
 
-    return jsonify({
-        "citation": {
-            "id": citation.id,
-            "title": citation.title,
-            "is_relevant": citation.is_relevant
-        }
-    })
+        return jsonify({
+            "citation": {
+                "id": citation.id,
+                "title": citation.title,
+                "abstract": citation.abstract,
+                "is_relevant": citation.is_relevant,
+                "iteration": citation.iteration
+            }
+        })
+    except Exception as e:
+        app.logger.error(f"Error updating citation: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to update citation"}), 500
 
 
 @app.route('/api/projects/<int:project_id>/train', methods=['POST'])
