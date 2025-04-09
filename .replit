@@ -6,27 +6,9 @@ channel = "stable-24_05"
 runButton = "Dev"
 
 [[workflows.workflow]]
-name = "Run"
-author = 11421348
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python main.py"
-
-[[workflows.workflow]]
-name = "Frontend Dev"
-author = 11421348
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd frontend && npm run dev"
-
-[[workflows.workflow]]
 name = "Dev"
 author = 11421348
-mode = "parallel"
+mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
@@ -43,6 +25,10 @@ run = ["sh", "-c", "gunicorn -w 4 -b 0.0.0.0:5000 main:app"]
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 5173
+externalPort = 5173
 
 [[ports]]
 localPort = 5174
