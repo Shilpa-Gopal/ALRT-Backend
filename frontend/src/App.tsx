@@ -1,6 +1,10 @@
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import axios from 'axios';
+import API_BASE_URL from './config/api';
+
+axios.defaults.baseURL = API_BASE_URL;
 import Login from './components/auth/Login';
 import Signup from './components/auth/Signup';
 import Home from './components/Home';
