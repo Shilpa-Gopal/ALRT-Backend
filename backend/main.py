@@ -137,7 +137,7 @@ def add_citations(project_id):
             file = request.files['file']
             if not file:
                 return jsonify({"error": "No file provided"}), 400
-                
+
             if not file.filename:
                 return jsonify({"error": "No filename provided"}), 400
 
@@ -148,6 +148,9 @@ def add_citations(project_id):
                 }), 400
 
             try:
+                file_size = len(file.read())
+                file.seek(0)  # Reset file pointer after reading
+                app.logger.info(f"Received file: {file.filename}, Size: {file_size} bytes")
                 if file.filename.endswith('.csv'):
                     df = pd.read_csv(file)
                 else:
