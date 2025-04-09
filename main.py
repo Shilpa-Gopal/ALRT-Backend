@@ -238,5 +238,26 @@ def filter_citations(project_id):
         } for c in citations]
     })
 
+@app.route('/api/projects/<int:project_id>/predict', methods=['POST'])
+def predict_citations(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    data = request.get_json()
+    if not isinstance(data.get('citations'), list):
+        return jsonify({"error": "Citations must be a list"}), 400
+        
+    review_system = LiteratureReviewSystem(project_id)
+    predictions = review_system.predict_relevance(data['citations'])
+    
+    return jsonify({
+        "predictions": predictions
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
