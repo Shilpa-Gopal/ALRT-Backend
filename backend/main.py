@@ -268,8 +268,6 @@ def update_citation(project_id, citation_id):
 
     data = request.get_json()
     if 'is_relevant' in data:
-        if citation.is_relevant is not None:
-            return jsonify({"error": "Citation already labeled"}), 400
         citation.is_relevant = data['is_relevant']
         db.session.commit()
 
