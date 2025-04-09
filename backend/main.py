@@ -197,6 +197,13 @@ def add_citations(project_id):
                     "details": str(e)
                 }), 500
 
+    except Exception as e:
+        app.logger.error(f"General error in add_citations: {str(e)}")
+        return jsonify({
+            "error": "Internal server error",
+            "details": str(e)
+        }), 500
+
 
 @app.route('/api/projects/<int:project_id>/citations/<int:citation_id>',
            methods=['PUT'])
