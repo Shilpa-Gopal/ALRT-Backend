@@ -73,6 +73,57 @@ class LiteratureReviewSystem:
             self.logger.error(f"Prediction error: {str(e)}")
             return [{"error": "Prediction failed"}] * len(citations)
 
+    def prepare_features(self, data):
+        text = data['title'] + ' ' + data['abstract']
+        return self.vectorizer.fit_transform(text)
+        
+    def calculate_metrics(self, y_true, y_pred):
+        return {
+            'accuracy': accuracy_score(y_true, y_pred),
+            'precision': precision_score(y_true, y_pred),
+            'recall': recall_score(y_true, y_pred),
+            'f1': f1_score(y_true, y_pred)
+        }
+        
+    def find_optimal_threshold(self, y_true, y_pred_proba):
+        precisions, recalls, thresholds = precision_recall_curve(y_true, y_pred_proba)
+        f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+        optimal_idx = np.argmax(f1_scores)
+        return thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
+        
+    def iterative_training(self, labeled_data, n_iterations=1):
+        history = {
+            'iterations': [],
+            'training_samples': [],
+            'citations_checked': [],
+            'metrics': []
+        }
+        
+        X = self.prepare_features(labeled_data)
+        y = labeled_data['is_relevant'].astype(int)
+        
+        model = XGBClassifier(
+            max_depth=3,
+            learning_rate=0.1,
+            n_estimators=100,
+            random_state=42
+        )
+        
+        model.fit(X, y)
+        y_pred = model.predict(X)
+        y_pred_proba = model.predict_proba(X)[:, 1]
+        
+        self.model = model
+        self.optimal_threshold = self.find_optimal_threshold(y, y_pred_proba)
+        metrics = self.calculate_metrics(y, y_pred)
+        
+        history['iterations'].append(0)
+        history['training_samples'].append(len(y))
+        history['citations_checked'].append(len(y))
+        history['metrics'].append(metrics)
+        
+        return history
+        
     def train_iteration(self, iteration: int = 0):
         data = self.get_project_data()
         labeled_data = data[data['is_relevant'].notna()]
@@ -80,8 +131,7 @@ class LiteratureReviewSystem:
         if len(labeled_data) < 10:
             return {'error': 'Not enough labeled data'}
             
-        system = LiteratureReviewSystem(max_features=self.max_features)
-        history = system.iterative_training(labeled_data, n_iterations=1)
+        history = self.iterative_training(labeled_data, n_iterations=1)
         
         return {
             'metrics': history['metrics'][0],
