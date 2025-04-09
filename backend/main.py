@@ -508,8 +508,14 @@ def get_iteration_info(project_id):
     })
 
 
-@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
+@app.route('/api/projects/<int:project_id>', methods=['DELETE', 'OPTIONS'])
 def delete_project(project_id):
+    app.logger.info(f"Received {request.method} request for project {project_id}")
+    app.logger.info(f"Headers: {dict(request.headers)}")
+    
+    if request.method == 'OPTIONS':
+        return '', 204
+        
     try:
         user_id = request.headers.get('X-User-Id')
         if not user_id:

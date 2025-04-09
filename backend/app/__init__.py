@@ -16,9 +16,9 @@ def create_app():
         r"/api/*": {
             "origins": "*",
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "X-User-Id", "Accept"],
+            "allow_headers": ["Content-Type", "X-User-Id", "Accept", "Authorization"],
             "expose_headers": ["Content-Type"],
-            "supports_credentials": False,
+            "supports_credentials": True,
             "max_age": 3600
         }
     })
