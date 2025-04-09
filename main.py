@@ -177,5 +177,66 @@ def train_model(project_id):
     
     return jsonify(result)
 
+@app.route('/api/projects/<int:project_id>/keywords', methods=['GET'])
+def get_keywords(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    return jsonify(project.keywords)
+
+@app.route('/api/projects/<int:project_id>/keywords', methods=['PUT'])
+def update_keywords(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    data = request.get_json()
+    if not isinstance(data, dict) or not all(k in data for k in ['include', 'exclude']):
+        return jsonify({"error": "Invalid keywords format"}), 400
+        
+    project.keywords = data
+    db.session.commit()
+    
+    return jsonify(project.keywords)
+
+@app.route('/api/projects/<int:project_id>/citations/filter', methods=['GET'])
+def filter_citations(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    iteration = request.args.get('iteration', type=int)
+    is_relevant = request.args.get('is_relevant', type=lambda v: v.lower() == 'true' if v else None)
+    
+    query = Citation.query.filter_by(project_id=project_id)
+    if iteration is not None:
+        query = query.filter_by(iteration=iteration)
+    if is_relevant is not None:
+        query = query.filter_by(is_relevant=is_relevant)
+        
+    citations = query.all()
+    return jsonify({
+        "citations": [{
+            "id": c.id,
+            "title": c.title,
+            "abstract": c.abstract,
+            "is_relevant": c.is_relevant,
+            "iteration": c.iteration
+        } for c in citations]
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
