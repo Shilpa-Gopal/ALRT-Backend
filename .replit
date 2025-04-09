@@ -28,6 +28,8 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 5176
+localPort = 5180
 externalPort = 3000
-exposeLocalhost = true
+
+[deployment]
+deploymentTarget = "cloudrun"
