@@ -145,17 +145,20 @@ def add_citations(project_id):
                 new_citations.append(citation)
         else:
             file = request.files['file']
-            if not file:
+            app.logger.info(f"Received file: {file.filename if file else 'No file'}")
+            
+            if not file or file.filename == '':
+                app.logger.error("No file provided or empty filename")
                 return jsonify({"error": "No file provided"}), 400
 
-            if not file.filename:
-                return jsonify({"error": "No filename provided"}), 400
-
             if not file.filename.endswith(('.csv', '.xlsx')):
+                app.logger.error(f"Invalid file format: {file.filename}")
                 return jsonify({
                     "error": "Invalid file format. Only CSV and Excel files are supported.",
                     "filename": file.filename
                 }), 400
+
+            app.logger.info(f"Processing file: {file.filename} ({file.content_length} bytes)")
 
             try:
                 app.logger.info(f"Attempting to process file: {file.filename}")
