@@ -15,8 +15,7 @@ with app.app_context():
 
 @app.route('/', methods=['GET'])
 def home():
-    response = {'status': 'healthy'}
-    return jsonify(response), 200
+    return '', 200
 
 @app.route('/api/auth/signup', methods=['POST'])
 def signup():
@@ -361,7 +360,7 @@ def predict_citations(project_id):
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 
 
