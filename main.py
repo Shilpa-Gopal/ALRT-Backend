@@ -108,21 +108,47 @@ def add_citations(project_id):
     project = Project.query.filter_by(id=project_id, user_id=user_id).first()
     if not project:
         return jsonify({"error": "Project not found"}), 404
-        
-    data = request.get_json()
-    if not isinstance(data.get('citations'), list):
-        return jsonify({"error": "Citations must be a list"}), 400
-        
-    new_citations = []
-    for citation_data in data['citations']:
-        citation = Citation(
-            title=citation_data['title'],
-            abstract=citation_data['abstract'],
-            project_id=project_id,
-            iteration=project.current_iteration
-        )
-        new_citations.append(citation)
-        
+
+    if 'file' not in request.files:
+        data = request.get_json()
+        if not isinstance(data.get('citations'), list):
+            return jsonify({"error": "Citations must be a list"}), 400
+            
+        new_citations = []
+        for citation_data in data['citations']:
+            citation = Citation(
+                title=citation_data['title'],
+                abstract=citation_data['abstract'],
+                project_id=project_id,
+                iteration=project.current_iteration
+            )
+            new_citations.append(citation)
+    else:
+        file = request.files['file']
+        if not file.filename.endswith(('.csv', '.xlsx')):
+            return jsonify({"error": "Only CSV and Excel files are supported"}), 400
+            
+        try:
+            if file.filename.endswith('.csv'):
+                df = pd.read_csv(file)
+            else:
+                df = pd.read_excel(file)
+                
+            if 'title' not in df.columns or 'abstract' not in df.columns:
+                return jsonify({"error": "File must contain 'title' and 'abstract' columns"}), 400
+                
+            new_citations = []
+            for _, row in df.iterrows():
+                citation = Citation(
+                    title=row['title'],
+                    abstract=row['abstract'],
+                    project_id=project_id,
+                    iteration=project.current_iteration
+                )
+                new_citations.append(citation)
+        except Exception as e:
+            return jsonify({"error": f"Failed to process file: {str(e)}"}), 400
+    
     db.session.bulk_save_objects(new_citations)
     db.session.commit()
     
@@ -186,8 +212,29 @@ def get_keywords(project_id):
     project = Project.query.filter_by(id=project_id, user_id=user_id).first()
     if not project:
         return jsonify({"error": "Project not found"}), 404
-        
-    return jsonify(project.keywords)
+
+    citations = Citation.query.filter_by(project_id=project_id).all()
+    if not citations:
+        return jsonify({"error": "No citations found"}), 404
+
+    # Combine titles and abstracts for TF-IDF
+    texts = [f"{c.title} {c.abstract}" for c in citations]
+    vectorizer = TfidfVectorizer(max_features=50, stop_words='english')
+    tfidf_matrix = vectorizer.fit_transform(texts)
+    
+    # Get feature names and their scores
+    feature_names = vectorizer.get_feature_names_out()
+    scores = tfidf_matrix.sum(axis=0).A1
+    
+    # Sort keywords by score
+    keywords = [{"word": word, "score": float(score)} 
+               for word, score in zip(feature_names, scores)]
+    keywords.sort(key=lambda x: x['score'], reverse=True)
+    
+    return jsonify({
+        "suggested_keywords": keywords[:50],
+        "selected_keywords": project.keywords
+    })
 
 @app.route('/api/projects/<int:project_id>/keywords', methods=['PUT'])
 def update_keywords(project_id):
