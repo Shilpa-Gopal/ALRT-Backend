@@ -53,8 +53,16 @@ export default function CitationLabeling() {
     }
   };
 
-  if (!citations.length) {
+  if (loading) {
     return <div className="text-center py-8">Loading citations...</div>;
+  }
+
+  if (error) {
+    return <div className="text-center py-8 text-red-600">{error}</div>;
+  }
+
+  if (!citations.length) {
+    return <div className="text-center py-8">No citations found to label</div>;
   }
 
   const currentCitation = citations[currentIndex];

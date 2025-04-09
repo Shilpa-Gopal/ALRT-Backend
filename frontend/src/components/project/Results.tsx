@@ -23,6 +23,17 @@ export default function Results() {
   useEffect(() => {
     const fetchResults = async () => {
       const userId = localStorage.getItem('userId');
+      
+      // Fetch keywords
+      try {
+        const keywordsResponse = await axios.get(`/api/projects/${id}/keywords`, {
+          headers: { 'X-User-Id': userId }
+        });
+        setKeywords(keywordsResponse.data.selected_keywords);
+      } catch (error) {
+        console.error('Failed to fetch keywords:', error);
+      }
+      const userId = localStorage.getItem('userId');
       const response = await axios.get(`/api/projects/${id}/citations/filter`, {
         headers: { 'X-User-Id': userId },
         params: { is_relevant: true }
