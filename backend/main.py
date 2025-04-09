@@ -151,10 +151,18 @@ def add_citations(project_id):
                 file_size = len(file.read())
                 file.seek(0)  # Reset file pointer after reading
                 app.logger.info(f"Received file: {file.filename}, Size: {file_size} bytes")
-                if file.filename.endswith('.csv'):
-                    df = pd.read_csv(file)
-                else:
-                    df = pd.read_excel(file)
+                
+                try:
+                    if file.filename.endswith('.csv'):
+                        df = pd.read_csv(file)
+                    else:
+                        df = pd.read_excel(file)
+                except Exception as e:
+                    app.logger.error(f"File read error: {str(e)}")
+                    return jsonify({
+                        "error": "Failed to read file",
+                        "details": str(e)
+                    }), 400
 
                 if df.empty:
                     return jsonify({"error": "File contains no data"}), 400
@@ -168,46 +176,26 @@ def add_citations(project_id):
                 new_citations = []
                 for _, row in df.iterrows():
                     citation = Citation(title=str(row['title']),
-                                        abstract=str(row['abstract']),
-                                        project_id=project_id,
-                                        iteration=project.current_iteration)
+                                     abstract=str(row['abstract']),
+                                     project_id=project_id,
+                                     iteration=project.current_iteration)
                     new_citations.append(citation)
-            except pd.errors.EmptyDataError:
-                return jsonify({"error": "The uploaded file is empty"}), 400
+
+                if not new_citations:
+                    return jsonify({"error": "No valid citations found in file"}), 400
+
+                db.session.bulk_save_objects(new_citations)
+                db.session.commit()
+                
+                return jsonify({"message": f"Added {len(new_citations)} citations"}), 201
+
             except Exception as e:
-                app.logger.error(f"File processing error: {str(e)}")
+                db.session.rollback()
+                app.logger.error(f"Upload processing error: {str(e)}")
                 return jsonify({
-                    "error": "Failed to process file",
+                    "error": "Failed to process upload",
                     "details": str(e)
-                }), 400
-
-        if not new_citations:
-            return jsonify({"error": "No valid citations found in file"}), 400
-
-        try:
-            db.session.bulk_save_objects(new_citations)
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            app.logger.error(f"Database error: {str(e)}")
-            return jsonify({
-                "error": "Failed to save citations to database",
-                "details": str(e)
-            }), 500
-
-        return jsonify({"message": f"Added {len(new_citations)} citations"}), 201
-
-    except Exception as e:
-        app.logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({
-            "error": "Internal server error",
-            "details": str(e)
-        }), 500
-
-    db.session.bulk_save_objects(new_citations)
-    db.session.commit()
-
-    return jsonify({"message": f"Added {len(new_citations)} citations"}), 201
+                }), 500
 
 
 @app.route('/api/projects/<int:project_id>/citations/<int:citation_id>',
