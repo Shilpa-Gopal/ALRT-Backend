@@ -16,6 +16,9 @@ class Project(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     citations = db.relationship('Citation', backref='project', lazy=True)
+    current_iteration = db.Column(db.Integer, default=0)
+    keywords = db.Column(db.JSON, default=dict)
+    model_metrics = db.Column(db.JSON, default=dict)
 
 class Citation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
