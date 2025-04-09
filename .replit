@@ -12,10 +12,6 @@ mode = "parallel"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd frontend && npm run dev"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
 args = "cd backend && python main.py"
 
 [deployment]
@@ -33,3 +29,11 @@ externalPort = 5173
 [[ports]]
 localPort = 5174
 externalPort = 80
+
+[[ports]]
+localPort = 5175
+externalPort = 3000
+
+[[ports]]
+localPort = 5176
+externalPort = 3001
