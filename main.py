@@ -15,7 +15,8 @@ with app.app_context():
 
 @app.route('/', methods=['GET'])
 def home():
-    return '', 200
+    response = {'status': 'healthy'}
+    return jsonify(response), 200
 
 @app.route('/api/auth/signup', methods=['POST'])
 def signup():
