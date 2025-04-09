@@ -8,7 +8,7 @@ runButton = "Dev"
 [[workflows.workflow]]
 name = "Dev"
 author = 11421348
-mode = "sequential"
+mode = "parallel"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
@@ -24,8 +24,12 @@ run = ["sh", "-c", "python backend/main.py"]
 
 [[ports]]
 localPort = 5000
-externalPort = 80
+externalPort = 5000
 
 [[ports]]
 localPort = 5173
 externalPort = 5173
+
+[[ports]]
+localPort = 5174
+externalPort = 80
