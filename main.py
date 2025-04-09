@@ -174,6 +174,8 @@ def update_citation(project_id, citation_id):
         
     data = request.get_json()
     if 'is_relevant' in data:
+        if citation.is_relevant is not None:
+            return jsonify({"error": "Citation already labeled"}), 400
         citation.is_relevant = data['is_relevant']
         db.session.commit()
         
@@ -310,12 +312,20 @@ def download_results(project_id):
     for col, header in enumerate(headers):
         worksheet.write(0, col, header)
     
+    # Get relevance scores for citations
+    review_system = LiteratureReviewSystem(project_id)
+    predictions = review_system.predict_relevance([{
+        'title': c.title,
+        'abstract': c.abstract
+    } for c in citations])
+
     # Write data
-    for row, citation in enumerate(citations, start=1):
+    for row, (citation, prediction) in enumerate(zip(citations, predictions), start=1):
         worksheet.write(row, 0, citation.title)
         worksheet.write(row, 1, citation.abstract)
         worksheet.write(row, 2, 'Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified')
         worksheet.write(row, 3, citation.iteration)
+        worksheet.write(row, 4, prediction.get('relevance_probability', 0) if 'error' not in prediction else 0)
         
     workbook.close()
     output.seek(0)
