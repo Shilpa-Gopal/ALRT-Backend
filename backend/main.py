@@ -513,35 +513,22 @@ def delete_project(project_id):
     try:
         user_id = request.headers.get('X-User-Id')
         if not user_id:
-            return jsonify({"error": "Unauthorized", "code": "AUTH_ERROR"}), 401
+            return jsonify({"error": "Unauthorized"}), 401
 
         project = Project.query.filter_by(id=project_id, user_id=user_id).first()
         if not project:
-            return jsonify({"error": "Project not found", "code": "NOT_FOUND"}), 404
+            return jsonify({"error": "Project not found"}), 404
 
-        try:
-            # Delete all citations associated with the project
-            Citation.query.filter_by(project_id=project_id).delete()
-            
-            # Delete the project
-            db.session.delete(project)
-            db.session.commit()
+        Citation.query.filter_by(project_id=project_id).delete()
+        db.session.delete(project)
+        db.session.commit()
+        
+        return '', 204
 
-            return jsonify({"message": "Project deleted successfully"}), 200
-        except Exception as e:
-            db.session.rollback()
-            app.logger.error(f"Database error deleting project {project_id}: {str(e)}")
-            return jsonify({
-                "error": "Database error during deletion",
-                "details": str(e)
-            }), 500
-            
     except Exception as e:
-        app.logger.error(f"Error in delete_project endpoint for project {project_id}: {str(e)}")
-        return jsonify({
-            "error": "Internal server error",
-            "details": str(e)
-        }), 500
+        db.session.rollback()
+        app.logger.error(f"Error deleting project {project_id}: {str(e)}")
+        return jsonify({"error": "Failed to delete project"}), 500
 
 @app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
 def get_labeled_citations(project_id):
