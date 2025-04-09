@@ -34,7 +34,8 @@ class LiteratureReviewSystem:
         return pd.DataFrame([{
             'title': c.title,
             'abstract': c.abstract,
-            'is_relevant': c.is_relevant
+            'is_relevant': c.is_relevant,
+            'iteration': c.iteration
         } for c in citations])
 
     def prepare_features(self, data):
