@@ -12,7 +12,7 @@ from app.models import User, Project, Citation
 from app.ml_system import LiteratureReviewSystem
 
 app = create_app()
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}})
 
 with app.app_context():
     db.create_all()
