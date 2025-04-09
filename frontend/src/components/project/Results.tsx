@@ -14,6 +14,10 @@ interface Citation {
 export default function Results() {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [metrics, setMetrics] = useState<any>(null);
+  const [keywords, setKeywords] = useState<{include: string[], exclude: string[]}>({
+    include: [],
+    exclude: []
+  });
   const { id } = useParams();
 
   useEffect(() => {
@@ -67,6 +71,32 @@ export default function Results() {
         </div>
       )}
 
+      <div className="bg-white rounded-lg shadow p-6 mb-6">
+        <h2 className="text-xl font-bold mb-4">Keywords</h2>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <h3 className="font-medium mb-2">Include Keywords</h3>
+            <div className="flex flex-wrap gap-2">
+              {keywords.include.map((keyword, index) => (
+                <span key={index} className="bg-green-100 px-2 py-1 rounded">
+                  {keyword}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div>
+            <h3 className="font-medium mb-2">Exclude Keywords</h3>
+            <div className="flex flex-wrap gap-2">
+              {keywords.exclude.map((keyword, index) => (
+                <span key={index} className="bg-red-100 px-2 py-1 rounded">
+                  {keyword}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-white rounded-lg shadow">
         <h2 className="text-xl font-bold p-6 border-b">Relevant Citations</h2>
         <div className="divide-y">
@@ -77,6 +107,20 @@ export default function Results() {
             </div>
           ))}
         </div>
+      </div>
+      <div className="mt-8 flex justify-between">
+        <button
+          onClick={() => navigate(`/project/${id}/citations`)}
+          className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700"
+        >
+          Back to Citations
+        </button>
+        <button
+          onClick={() => navigate('/home')}
+          className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
+        >
+          Finish
+        </button>
       </div>
     </div>
   );

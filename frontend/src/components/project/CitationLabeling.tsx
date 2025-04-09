@@ -13,18 +13,27 @@ interface Citation {
 export default function CitationLabeling() {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
   const { id } = useParams();
   const navigate = useNavigate();
 
   useEffect(() => {
     const fetchCitations = async () => {
+    try {
+      setLoading(true);
       const userId = localStorage.getItem('userId');
       const response = await axios.get(`/api/projects/${id}/citations/filter`, {
         headers: { 'X-User-Id': userId }
       });
       setCitations(response.data.citations);
-    };
-    fetchCitations();
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to fetch citations');
+    } finally {
+      setLoading(false);
+    }
+  };
+  fetchCitations();
   }, [id]);
 
   const handleLabel = async (isRelevant: boolean) => {
@@ -54,9 +63,17 @@ export default function CitationLabeling() {
     <div className="max-w-4xl mx-auto px-4 py-8">
       <div className="bg-white rounded-lg shadow p-6">
         <div className="mb-4">
-          <span className="text-sm text-gray-500">
-            Citation {currentIndex + 1} of {citations.length}
-          </span>
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-500">
+              Citation {currentIndex + 1} of {citations.length}
+            </span>
+            <div className="w-48 h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-blue-600" 
+                style={{width: `${(currentIndex / citations.length) * 100}%`}}
+              />
+            </div>
+          </div>
         </div>
         
         <h2 className="text-xl font-bold mb-4">{currentCitation.title}</h2>
