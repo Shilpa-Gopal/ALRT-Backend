@@ -1,4 +1,6 @@
 from flask import Flask, jsonify, request, abort, send_file
+import os
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
 import io
 import xlsxwriter
@@ -148,15 +150,24 @@ def add_citations(project_id):
                 }), 400
 
             try:
-                file_size = len(file.read())
-                file.seek(0)  # Reset file pointer after reading
-                app.logger.info(f"Received file: {file.filename}, Size: {file_size} bytes")
+                # Save the file temporarily
+                temp_path = os.path.join('/tmp', file.filename)
+                file.save(temp_path)
+                app.logger.info(f"Saved file temporarily: {temp_path}")
                 
                 try:
                     if file.filename.endswith('.csv'):
-                        df = pd.read_csv(file)
+                        df = pd.read_csv(temp_path)
+                    elif file.filename.endswith('.xlsx'):
+                        df = pd.read_excel(temp_path, engine='openpyxl')
                     else:
-                        df = pd.read_excel(file)
+                        return jsonify({
+                            "error": "Unsupported file format",
+                            "details": "Only .csv and .xlsx files are supported"
+                        }), 400
+                    
+                    # Clean up temp file
+                    os.remove(temp_path)
                 except Exception as e:
                     app.logger.error(f"File read error: {str(e)}")
                     return jsonify({
