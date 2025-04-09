@@ -150,20 +150,25 @@ def add_citations(project_id):
                 }), 400
 
             try:
+                app.logger.info(f"Attempting to process file: {file.filename}")
                 # Save the file temporarily
-                temp_path = os.path.join('/tmp', file.filename)
+                temp_path = os.path.join('/tmp', secure_filename(file.filename))
                 file.save(temp_path)
                 app.logger.info(f"Saved file temporarily: {temp_path}")
                 
                 try:
                     if file.filename.endswith('.csv'):
+                        app.logger.info("Processing CSV file")
                         df = pd.read_csv(temp_path)
                     elif file.filename.endswith('.xlsx'):
+                        app.logger.info("Processing Excel file")
                         df = pd.read_excel(temp_path, engine='openpyxl')
+                        app.logger.info(f"Excel file read successfully with {len(df)} rows")
                     else:
+                        app.logger.error(f"Unsupported file format: {file.filename}")
                         return jsonify({
                             "error": "Unsupported file format",
-                            "details": "Only .csv and .xlsx files are supported"
+                            "details": f"File {file.filename} is not supported. Only .csv and .xlsx files are allowed"
                         }), 400
                     
                     # Clean up temp file
