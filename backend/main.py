@@ -115,15 +115,23 @@ def create_project():
 @app.route('/api/projects/<int:project_id>/citations', methods=['POST'])
 def add_citations(project_id):
     try:
+        app.logger.info(f"Received citation upload request for project {project_id}")
+        app.logger.info(f"Request headers: {dict(request.headers)}")
+        app.logger.info(f"Request files: {request.files}")
+        app.logger.info(f"Request form: {request.form}")
+        
         user_id = request.headers.get('X-User-Id')
         if not user_id:
+            app.logger.error("No user ID in request headers")
             return jsonify({"error": "Unauthorized"}), 401
 
         project = Project.query.filter_by(id=project_id, user_id=user_id).first()
         if not project:
+            app.logger.error(f"Project {project_id} not found for user {user_id}")
             return jsonify({"error": "Project not found"}), 404
 
         if 'file' not in request.files:
+            app.logger.info("No file in request, checking for JSON data")
             data = request.get_json()
             if not isinstance(data.get('citations'), list):
                 return jsonify({"error": "Citations must be a list"}), 400
