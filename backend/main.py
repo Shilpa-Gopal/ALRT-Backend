@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request, abort, send_file
+from flask_cors import CORS
 import io
 import xlsxwriter
 import pandas as pd
@@ -8,6 +9,7 @@ from app import create_app, db
 from app.models import User, Project, Citation
 
 app = create_app()
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 with app.app_context():
     db.create_all()
