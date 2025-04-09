@@ -26,3 +26,8 @@ args = "cd frontend && npm run dev"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 5176
+externalPort = 3000
+exposeLocalhost = true
