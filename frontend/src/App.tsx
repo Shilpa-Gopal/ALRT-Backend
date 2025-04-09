@@ -9,6 +9,11 @@ import KeywordSelection from './components/project/KeywordSelection';
 import CitationLabeling from './components/project/CitationLabeling';
 import Results from './components/project/Results';
 
+function PrivateRoute({ children }: { children: React.ReactElement }) {
+  const userId = localStorage.getItem('userId');
+  return userId ? children : <Navigate to="/login" replace />;
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -16,11 +21,11 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
-          <Route path="/home" element={<Home />} />
-          <Route path="/project/new" element={<NewProject />} />
-          <Route path="/project/:id/keywords" element={<KeywordSelection />} />
-          <Route path="/project/:id/citations" element={<CitationLabeling />} />
-          <Route path="/project/:id/results" element={<Results />} />
+          <Route path="/home" element={<PrivateRoute><Home /></PrivateRoute>} />
+          <Route path="/project/new" element={<PrivateRoute><NewProject /></PrivateRoute>} />
+          <Route path="/project/:id/keywords" element={<PrivateRoute><KeywordSelection /></PrivateRoute>} />
+          <Route path="/project/:id/citations" element={<PrivateRoute><CitationLabeling /></PrivateRoute>} />
+          <Route path="/project/:id/results" element={<PrivateRoute><Results /></PrivateRoute>} />
           <Route path="/" element={<Navigate to="/login" replace />} />
         </Routes>
       </div>
