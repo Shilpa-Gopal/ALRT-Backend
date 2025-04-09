@@ -9,6 +9,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import create_app, db
 from app.models import User, Project, Citation
+from app.ml_system import LiteratureReviewSystem
 
 app = create_app()
 CORS(app, resources={r"/api/*": {"origins": "*"}})
