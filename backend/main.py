@@ -519,20 +519,27 @@ def delete_project(project_id):
         if not project:
             return jsonify({"error": "Project not found", "code": "NOT_FOUND"}), 404
 
-        # Delete all citations associated with the project
-        Citation.query.filter_by(project_id=project_id).delete()
-        
-        # Delete the project
-        db.session.delete(project)
-        db.session.commit()
+        try:
+            # Delete all citations associated with the project
+            Citation.query.filter_by(project_id=project_id).delete()
+            
+            # Delete the project
+            db.session.delete(project)
+            db.session.commit()
 
-        return jsonify({"message": "Project deleted successfully"}), 200
+            return jsonify({"message": "Project deleted successfully"}), 200
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Database error deleting project {project_id}: {str(e)}")
+            return jsonify({
+                "error": "Database error during deletion",
+                "details": str(e)
+            }), 500
             
     except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error deleting project {project_id}: {str(e)}")
+        app.logger.error(f"Error in delete_project endpoint for project {project_id}: {str(e)}")
         return jsonify({
-            "error": "Failed to delete project",
+            "error": "Internal server error",
             "details": str(e)
         }), 500
 
