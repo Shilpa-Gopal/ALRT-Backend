@@ -13,9 +13,9 @@ app = create_app()
 with app.app_context():
     db.create_all()
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def home():
-    return jsonify({"message": "Literature Review API is running"})
+    return jsonify({"message": "Literature Review API is running", "status": "healthy"}), 200
 
 @app.route('/api/auth/signup', methods=['POST'])
 def signup():
