@@ -1,0 +1,14 @@
+I need to build a automated literature review tool.
+User flow:
+
+signup user with first name, last name, email, password
+after succesful signup naviagate to login page
+After logging in you navigate to home page
+In home page the user will create new project and also see all existing projects
+When clicked on new project take project name and ask for excel or csv file. Note: this file should defenitly have title and abstract columns, if didn't find this columns show error and dont allow to proceed.
+after successul upload of file while creating project allow to proceed.
+in next page we need to show set of same keywords with two different sections that is named relevant and irrelavant. This keywords are generate using TD-IDF modal to extract keyworkds from provided excel or csv file. The limit of keywords to show on interface is 50 only.
+Now user will select few keywords from relevant section and irrelavant section.
+after user select keywords from 2 sections and proceed. now in next page show list of citations provided in user uploaded file. The file will have title and abstaract so in the list out title and abstaract for each item in list. Provide pagination for this list with 15 items per page. here in this page user will select total 10 number of items from list. each list will have to checkbox with label relevant and irrelavant. So user will select either one option for each item in list. In the selection as a considiton user should select 5 item as relevant and 5 item as irrelavant mandatoryly.
+Now you have keywords and citations select by user. Train xgboost modal using those selection.
+I'm providing ml python file which have core logic xgboost which is training in iterative way for 10 iterations. So the citation selection process should happen 10 times and the keywords are same for every iteration. note: for each iteration the xgboost modal should be trained. another note: when your training xgboost modal for 1st iteration and move to 2nd iteration training make sure the items(citations) selected in 1st iteration is also included

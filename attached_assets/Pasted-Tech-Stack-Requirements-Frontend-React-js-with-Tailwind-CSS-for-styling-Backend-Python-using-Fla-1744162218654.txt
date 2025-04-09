@@ -1,0 +1,89 @@
+Tech Stack Requirements:
+Frontend: React.js with Tailwind CSS for styling
+
+Backend: Python using Flask
+
+I will provide the core XGBoost logic in a Python file to handle iterative training (up to 10 iterations)
+
+User Flow & Feature Requirements:
+1. Authentication:
+Implement user Signup with: First Name, Last Name, Email, Password
+
+After successful signup, redirect to the Login Page
+
+After logging in, redirect to the Home Page
+
+2. Home Page:
+Display options to:
+
+Create New Project
+
+View Existing Projects
+
+3. New Project Flow:
+When the user clicks "New Project":
+
+Ask for a Project Name
+
+Prompt for file upload: accept only .csv or .xlsx files
+
+Validate the uploaded file to ensure it contains title and abstract columns
+
+If missing, show an error and prevent further progress
+
+On successful validation, proceed to the Keyword Selection step
+
+4. Keyword Selection:
+Use TF-IDF to extract keywords from the uploaded file (title + abstract)
+
+Display a list of 50 extracted keywords
+
+Allow the user to manually assign keywords into two categories:
+
+Relevant
+
+Irrelevant
+
+The user can select multiple keywords for each category
+
+5. Citation Labeling:
+Show a paginated list (15 per page) of all citations from the file
+
+Display each citation's title and abstract
+
+For each citation, provide two checkboxes:
+
+Relevant
+
+Irrelevant
+
+The user must select a total of 10 citations:
+
+5 marked as Relevant
+
+5 marked as Irrelevant
+
+Enforce this selection condition before allowing the user to proceed
+
+6. Model Training:
+Use the selected keywords and labeled citations to train the provided XGBoost model
+
+After training, navigate to the Results Page:
+
+Use the model to classify the remaining (unlabeled) citations
+
+Sort the list in descending order of predicted relevance probability
+
+7. Post-Training Options:
+On the Results Page, provide:
+
+Option to Download results as an Excel file
+
+Option to Retrain the model by selecting another set of 5 relevant and 5 irrelevant citations
+
+Prevent re-selection of already used citations
+
+Combine all selections from previous iterations for training
+
+Allow up to 10 training iterations in total
+
