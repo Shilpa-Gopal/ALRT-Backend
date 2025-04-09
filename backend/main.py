@@ -514,27 +514,38 @@ def delete_project(project_id):
     app.logger.info(f"Headers: {dict(request.headers)}")
     
     if request.method == 'OPTIONS':
-        return '', 204
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-User-Id')
+        return response, 204
         
     try:
         user_id = request.headers.get('X-User-Id')
+        app.logger.info(f"Attempting to delete project {project_id} for user {user_id}")
+        
         if not user_id:
+            app.logger.error("No user ID provided")
             return jsonify({"error": "Unauthorized"}), 401
 
         project = Project.query.filter_by(id=project_id, user_id=user_id).first()
         if not project:
+            app.logger.error(f"Project {project_id} not found for user {user_id}")
             return jsonify({"error": "Project not found"}), 404
 
+        app.logger.info("Deleting citations...")
         Citation.query.filter_by(project_id=project_id).delete()
+        
+        app.logger.info("Deleting project...")
         db.session.delete(project)
         db.session.commit()
         
+        app.logger.info(f"Successfully deleted project {project_id}")
         return '', 204
 
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error deleting project {project_id}: {str(e)}")
-        return jsonify({"error": "Failed to delete project"}), 500
+        return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
 
 @app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
 def get_labeled_citations(project_id):
