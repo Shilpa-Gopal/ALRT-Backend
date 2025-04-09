@@ -250,7 +250,7 @@ def add_citations(project_id):
         }), 500
 
 
-@app.route('/api/projects/<int:project_id>/citations/<int:citation_id>',
+@app.route('/api/projects/<int:project_id>/citations/<int:citation_id>/relevance',
            methods=['PUT'])
 def update_citation(project_id, citation_id):
     try:
