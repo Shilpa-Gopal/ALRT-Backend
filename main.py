@@ -2,6 +2,8 @@
 from flask import Flask, jsonify, request, abort, send_file
 import io
 import xlsxwriter
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import create_app, db
 from app.models import User, Project, Citation
@@ -348,3 +350,45 @@ def predict_citations(project_id):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+
+
+@app.route('/api/projects/<int:project_id>/iterations', methods=['GET'])
+def get_iteration_info(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    return jsonify({
+        "current_iteration": project.current_iteration,
+        "max_iterations": 10,
+        "metrics": project.model_metrics
+    })
+
+@app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
+def get_labeled_citations(project_id):
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+        
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+        
+    labeled = Citation.query.filter(
+        Citation.project_id == project_id,
+        Citation.is_relevant.isnot(None)
+    ).all()
+    
+    return jsonify({
+        "labeled_citations": [{
+            "id": c.id,
+            "title": c.title,
+            "is_relevant": c.is_relevant,
+            "iteration": c.iteration
+        } for c in labeled]
+    })
