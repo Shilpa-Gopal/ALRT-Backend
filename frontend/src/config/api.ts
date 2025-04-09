@@ -1,6 +1,6 @@
 
 const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? '/api' // In production, relative path since both are deployed together
-  : 'http://0.0.0.0:5000/api'; // In development, full URL
+  ? 'https://your-repl-name.yourusername.repl.co/api' // Update this with your actual deployed backend URL
+  : 'http://0.0.0.0:5000/api';
 
 export default API_BASE_URL;
