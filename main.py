@@ -304,13 +304,14 @@ def download_results(project_id):
     citations = Citation.query.filter_by(project_id=project_id).all()
     
     output = io.BytesIO()
-    workbook = xlsxwriter.Workbook(output)
-    worksheet = workbook.add_worksheet()
+    from openpyxl import Workbook
+    workbook = Workbook()
+    worksheet = workbook.active
     
     # Write headers
     headers = ['Title', 'Abstract', 'Is Relevant', 'Iteration', 'Relevance Score']
-    for col, header in enumerate(headers):
-        worksheet.write(0, col, header)
+    for col, header in enumerate(headers, start=1):
+        worksheet.cell(row=1, column=col, value=header)
     
     # Get relevance scores for citations
     review_system = LiteratureReviewSystem(project_id)
@@ -320,14 +321,14 @@ def download_results(project_id):
     } for c in citations])
 
     # Write data
-    for row, (citation, prediction) in enumerate(zip(citations, predictions), start=1):
-        worksheet.write(row, 0, citation.title)
-        worksheet.write(row, 1, citation.abstract)
-        worksheet.write(row, 2, 'Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified')
-        worksheet.write(row, 3, citation.iteration)
-        worksheet.write(row, 4, prediction.get('relevance_probability', 0) if 'error' not in prediction else 0)
+    for row, (citation, prediction) in enumerate(zip(citations, predictions), start=2):
+        worksheet.cell(row=row, column=1, value=citation.title)
+        worksheet.cell(row=row, column=2, value=citation.abstract)
+        worksheet.cell(row=row, column=3, value='Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified')
+        worksheet.cell(row=row, column=4, value=citation.iteration)
+        worksheet.cell(row=row, column=5, value=prediction.get('relevance_probability', 0) if 'error' not in prediction else 0)
         
-    workbook.close()
+    workbook.save(output)
     output.seek(0)
     
     return send_file(
