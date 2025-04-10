@@ -441,21 +441,28 @@ def download_results(project_id):
         'abstract': c.abstract
     } for c in citations])
 
-    # Write data
-    for row, (citation, prediction) in enumerate(zip(citations, predictions),
-                                                 start=2):
-        worksheet.cell(row=row, column=1, value=citation.title)
-        worksheet.cell(row=row, column=2, value=citation.abstract)
-        worksheet.cell(
-            row=row,
-            column=3,
-            value='Yes' if citation.is_relevant else
-            'No' if citation.is_relevant is not None else 'Unclassified')
-        worksheet.cell(row=row, column=4, value=citation.iteration)
-        worksheet.cell(row=row,
-                       column=5,
-                       value=prediction.get('relevance_probability', 0)
-                       if 'error' not in prediction else 0)
+    # Create list of data and sort by relevance score
+    data_rows = []
+    for citation, prediction in zip(citations, predictions):
+        relevance_score = prediction.get('relevance_probability', 0) if 'error' not in prediction else 0
+        data_rows.append({
+            'title': citation.title,
+            'abstract': citation.abstract,
+            'is_relevant': 'Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified',
+            'iteration': citation.iteration,
+            'relevance_score': relevance_score
+        })
+    
+    # Sort by relevance score in descending order
+    data_rows.sort(key=lambda x: x['relevance_score'], reverse=True)
+    
+    # Write sorted data
+    for row, data in enumerate(data_rows, start=2):
+        worksheet.cell(row=row, column=1, value=data['title'])
+        worksheet.cell(row=row, column=2, value=data['abstract'])
+        worksheet.cell(row=row, column=3, value=data['is_relevant'])
+        worksheet.cell(row=row, column=4, value=data['iteration'])
+        worksheet.cell(row=row, column=5, value=data['relevance_score'])
 
     workbook.save(output)
     output.seek(0)
