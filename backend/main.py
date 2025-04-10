@@ -276,9 +276,11 @@ def update_citation(project_id, citation_id):
         if 'is_relevant' in data:
             # Allow null/None value to unlabel the citation
             citation.is_relevant = data['is_relevant'] if data['is_relevant'] in [True, False] else None
+            if citation.is_relevant is not None:
+                citation.iteration = project.current_iteration
             db.session.commit()
             status = "unlabeled" if citation.is_relevant is None else str(citation.is_relevant)
-            app.logger.info(f"Updated citation {citation_id} relevance to {status}")
+            app.logger.info(f"Updated citation {citation_id} relevance to {status} for iteration {citation.iteration}")
 
         return jsonify({
             "citation": {
