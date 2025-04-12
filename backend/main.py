@@ -517,16 +517,8 @@ def get_iteration_info(project_id):
     })
 
 
-@app.route('/api/projects/<int:project_id>', methods=['DELETE', 'OPTIONS'])
+@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
 def delete_project(project_id):
-    response = jsonify({})
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-User-Id')
-    
-    if request.method == 'OPTIONS':
-        return response, 204
-        
     try:
         user_id = request.headers.get('X-User-Id')
         if not user_id:
