@@ -336,7 +336,7 @@ def get_keywords(project_id):
 
     # Combine titles and abstracts for TF-IDF
     texts = [f"{c.title} {c.abstract}" for c in citations]
-    vectorizer = TfidfVectorizer(max_features=50, stop_words='english')
+    vectorizer = TfidfVectorizer(max_features=70, stop_words='english')
     tfidf_matrix = vectorizer.fit_transform(texts)
 
     # Get feature names and their scores

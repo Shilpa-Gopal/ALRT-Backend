@@ -12,7 +12,7 @@ class LiteratureReviewSystem:
         self.project_id = project_id
         self.max_features = max_features
         self.setup_logging()
-        self.vectorizer = TfidfVectorizer(max_features=max_features)
+        self.vectorizer = TfidfVectorizer(max_features=max_features) #Updated max_features here
         self.optimal_threshold = 0.5
         self.max_iterations = 10
         self.labeled_citations = set()
@@ -88,12 +88,12 @@ class LiteratureReviewSystem:
     def train_iteration(self, iteration: int = 0):
         data = self.get_project_data()
         labeled_data = data[data['is_relevant'].notna()]
-        
+
         # Validate citation counts for current iteration
         current_iter_data = labeled_data[labeled_data['iteration'] == iteration]
         relevant_count = sum(current_iter_data['is_relevant'] == True)
         irrelevant_count = sum(current_iter_data['is_relevant'] == False)
-        
+
         if relevant_count != 5 or irrelevant_count != 5:
             return {'error': 'Each iteration requires exactly 5 relevant and 5 irrelevant citations'}
 
