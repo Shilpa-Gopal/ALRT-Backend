@@ -1,0 +1,75 @@
+Here are the specific technical details the backend team will need to implement the changes:
+
+1. Increase Keyword Limit to 70
+Current implementation:
+
+The backend is likely limiting the number of keywords returned in the TF-IDF algorithm to 50 keywords.
+Required changes:
+
+Modify the keyword extraction function to return 70 keywords instead of 50
+Specifically, change the n_terms or similar parameter in the TF-IDF implementation
+For example, if using scikit-learn:
+# Change from:
+tfidf_vectorizer = TfidfVectorizer(max_features=50)
+# To:
+tfidf_vectorizer = TfidfVectorizer(max_features=70)
+If using NLTK or other libraries, adjust the corresponding parameter that controls the number of terms returned
+API response structure:
+
+The structure can remain the same; simply include 70 keywords in the suggested_keywords array instead of 50
+Example response:
+{
+  "selected_keywords": {
+    "exclude": [],
+    "include": []
+  },
+  "suggested_keywords": [
+    {"score": 373.01, "word": "cancer"},
+    {"score": 324.52, "word": "patients"},
+    /* ... 68 more keywords ... */
+  ]
+}
+2. Support for Custom Keywords
+Current implementation:
+
+The backend likely only expects keywords from its own generated list to be included in the include and exclude arrays.
+Required changes:
+
+API endpoint update (/api/projects/{projectId}/keywords):
+
+Modify the keyword update logic to accept any custom string in the include and exclude arrays
+Remove any validation that restricts keywords to only those in the suggested keywords list
+Example pseudo-code:
+# Change from:
+if keyword not in suggested_keywords:
+    raise InvalidKeywordError()
+# To:
+# Accept any keyword, even if not in suggested_keywords
+Database schema considerations:
+
+Ensure the database schema for the keywords table doesn't have any constraints that would prevent storing custom keywords
+Check if there are any foreign key constraints or unique constraints that might need to be adjusted
+Backend validation:
+
+Add basic validation for custom keywords:
+Reasonable maximum length (e.g., 50 characters)
+Sanitization to prevent SQL injection or other security issues
+Remove duplicate keywords
+Storage mechanism:
+
+Ensure custom keywords are stored with the same schema as system-generated keywords
+If using a different structure for suggested vs. selected keywords, make sure custom keywords are properly integrated
+Response for custom keywords:
+
+When retrieving keywords, include custom keywords in the appropriate array:
+{
+  "selected_keywords": {
+    "include": ["custom_keyword1", "cancer", "custom_keyword2"],
+    "exclude": ["irrelevant_term"]
+  },
+  "suggested_keywords": [
+    {"score": 373.01, "word": "cancer"},
+    /* ... other system-generated keywords ... */
+  ]
+}
+These changes should ensure that the backend properly supports both displaying 70 keywords and handling custom user-added keywords without any issues.
