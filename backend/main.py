@@ -127,9 +127,9 @@ def create_project():
             db.session.add(project)
             db.session.commit()
             db.session.refresh(project)
-        
-        app.logger.info(f"Project created successfully with ID: {project.id}")
-        return jsonify({
+            
+            app.logger.info(f"Project created successfully with ID: {project.id}")
+            return jsonify({
             "project": {
                 "id": project.id,
                 "name": project.name,
