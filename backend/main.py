@@ -116,20 +116,19 @@ def create_project():
             app.logger.error("No project name in request data")
             return jsonify({"error": "Project name is required"}), 400
 
-        try:
-            user_id_int = int(user_id)
-            project = Project(name=data['name'],
-                            user_id=user_id_int,
-                            keywords={
-                                "include": [],
-                                "exclude": []
-                            })
-            db.session.add(project)
-            db.session.commit()
-            db.session.refresh(project)
-            
-            app.logger.info(f"Project created successfully with ID: {project.id}")
-            return jsonify({
+        user_id_int = int(user_id)
+        project = Project(name=data['name'],
+                        user_id=user_id_int,
+                        keywords={
+                            "include": [],
+                            "exclude": []
+                        })
+        db.session.add(project)
+        db.session.commit()
+        db.session.refresh(project)
+        
+        app.logger.info(f"Project created successfully with ID: {project.id}")
+        return jsonify({
             "project": {
                 "id": project.id,
                 "name": project.name,
@@ -139,6 +138,9 @@ def create_project():
         }), 201
         
     except Exception as e:
+        app.logger.error(f"Project creation error: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to create project", "details": str(e)}), 500
         app.logger.error(f"Project creation error: {str(e)}")
         db.session.rollback()
         return jsonify({"error": "Failed to create project", "details": str(e)}), 500
