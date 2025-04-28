@@ -78,9 +78,10 @@ def get_projects():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # Convert user_id to integer and strictly filter by it
+        # Convert user_id to integer and strictly filter by user_id
         user_id_int = int(user_id)
-        projects = Project.query.filter(Project.user_id == user_id_int).all()
+        projects = Project.query.filter_by(user_id=user_id_int).all()
+        app.logger.info(f"Found {len(projects)} projects for user {user_id_int}")
         
         return jsonify({
             "projects": [{
