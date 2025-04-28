@@ -77,15 +77,21 @@ def get_projects():
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    projects = Project.query.filter_by(user_id=user_id).all()
-    return jsonify({
-        "projects": [{
-            "id": p.id,
-            "name": p.name,
-            "created_at": p.created_at,
-            "current_iteration": p.current_iteration
-        } for p in projects]
-    })
+    try:
+        # Convert user_id to integer and strictly filter by it
+        user_id_int = int(user_id)
+        projects = Project.query.filter(Project.user_id == user_id_int).all()
+        
+        return jsonify({
+            "projects": [{
+                "id": p.id,
+                "name": p.name,
+                "created_at": p.created_at,
+                "current_iteration": p.current_iteration
+            } for p in projects]
+        })
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch projects"}), 500
 
 
 @app.route('/api/projects', methods=['POST'])
@@ -110,14 +116,17 @@ def create_project():
             app.logger.error("No project name in request data")
             return jsonify({"error": "Project name is required"}), 400
 
-        project = Project(name=data['name'],
-                        user_id=user_id,
-                        keywords={
-                            "include": [],
-                            "exclude": []
-                        })
-        db.session.add(project)
-        db.session.commit()
+        try:
+            user_id_int = int(user_id)
+            project = Project(name=data['name'],
+                            user_id=user_id_int,
+                            keywords={
+                                "include": [],
+                                "exclude": []
+                            })
+            db.session.add(project)
+            db.session.commit()
+            db.session.refresh(project)
         
         app.logger.info(f"Project created successfully with ID: {project.id}")
         return jsonify({
