@@ -1,0 +1,285 @@
+
+import { useState, useEffect } from "react";
+import { useLocation, useRoute } from "wouter";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Loader2, ArrowRight, Check, X, Plus } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { keywordService } from "@/lib/api-service";
+import { FrequencyDialog } from "@/components/ui/frequency-dialog";
+
+interface Keyword {
+  word: string;
+  score: number;
+}
+
+export default function KeywordSelectionPage() {
+  const [_, navigate] = useLocation();
+  const [match, params] = useRoute("/projects/:id/keywords");
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const projectId = match && !isNaN(parseInt(params.id)) ? parseInt(params.id) : 0;
+  const [newKeyword, setNewKeyword] = useState<string>("");
+  const [includedKeywords, setIncludedKeywords] = useState<string[]>([]);
+  const [excludedKeywords, setExcludedKeywords] = useState<{ word: string; frequency: number }[]>([]);
+  const [showFrequencyDialog, setShowFrequencyDialog] = useState(false);
+  const [selectedKeyword, setSelectedKeyword] = useState<string>("");
+
+  // Fetch keywords data
+  const { data: keywordsData, isLoading } = useQuery({
+    queryKey: [`/api/projects/${projectId}/keywords`],
+    queryFn: async () => {
+      return await keywordService.getKeywords(projectId);
+    },
+    enabled: !!projectId
+  });
+
+  // Update keywords mutation
+  const updateKeywordsMutation = useMutation({
+    mutationFn: async () => {
+      return await keywordService.updateKeywords(projectId, {
+        include: includedKeywords,
+        exclude: excludedKeywords
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/projects/${projectId}/keywords`] });
+      toast({
+        title: "Keywords updated",
+        description: "Your keyword selections have been saved.",
+      });
+      navigate(`/projects/${projectId}/citations`);
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to update keywords",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  });
+
+  // Initialize keywords from API response
+  useEffect(() => {
+    if (keywordsData?.selected_keywords) {
+      setIncludedKeywords(keywordsData.selected_keywords.include || []);
+      setExcludedKeywords(keywordsData.selected_keywords.exclude || []);
+    }
+  }, [keywordsData]);
+
+  const handleExcludeWithFrequency = (keyword: string, frequency: number) => {
+    setExcludedKeywords(prev => [...prev, { word: keyword, frequency }]);
+    setIncludedKeywords(prev => prev.filter(k => k !== keyword));
+    setShowFrequencyDialog(false);
+  };
+
+  const toggleKeyword = (keyword: string, action: 'include' | 'exclude') => {
+    if (action === 'include') {
+      if (includedKeywords.includes(keyword)) {
+        setIncludedKeywords(prev => prev.filter(k => k !== keyword));
+      } else {
+        setExcludedKeywords(prev => prev.filter(k => k.word !== keyword));
+        setIncludedKeywords(prev => [...prev, keyword]);
+      }
+    } else {
+      setSelectedKeyword(keyword);
+      setShowFrequencyDialog(true);
+    }
+  };
+
+  const addCustomKeyword = (e: React.FormEvent, action: 'include' | 'exclude') => {
+    e.preventDefault();
+    const trimmedKeyword = newKeyword.trim().toLowerCase();
+
+    if (!trimmedKeyword) {
+      toast({
+        title: "Invalid keyword",
+        description: "Please enter a valid keyword",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (includedKeywords.includes(trimmedKeyword) || excludedKeywords.some(k => k.word === trimmedKeyword)) {
+      toast({
+        title: "Keyword already exists",
+        description: "This keyword has already been added",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (action === 'include') {
+      setIncludedKeywords(prev => [...prev, trimmedKeyword]);
+    } else {
+      setSelectedKeyword(trimmedKeyword);
+      setShowFrequencyDialog(true);
+    }
+    setNewKeyword("");
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Extract suggested keywords from the response
+  const suggestedKeywords = keywordsData?.suggested_keywords || [];
+
+  return (
+    <div className="container max-w-5xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Keyword Selection</CardTitle>
+          <CardDescription>
+            Select relevant keywords to refine your literature review. Include keywords that are relevant to your
+            research, and exclude those that are not.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-6">
+            {/* Included Keywords Section */}
+            <div>
+              <h3 className="text-sm font-medium mb-2 text-green-600">Included Keywords</h3>
+              <div className="flex flex-wrap gap-2">
+                {includedKeywords.map((keyword) => (
+                  <Badge key={`include-${keyword}`} variant="default" className="text-sm py-1 px-3">
+                    {keyword}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-4 w-4 ml-2"
+                      onClick={() => toggleKeyword(keyword, 'include')}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+
+            {/* Excluded Keywords Section */}
+            <div>
+              <h3 className="text-sm font-medium mb-2 text-red-600">Excluded Keywords</h3>
+              <div className="flex flex-wrap gap-2">
+                {excludedKeywords.map((kw) => (
+                  <Badge key={`exclude-${kw.word}`} variant="destructive" className="text-sm py-1 px-3">
+                    {kw.word} (≥{kw.frequency})
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-4 w-4 ml-2"
+                      onClick={() => setExcludedKeywords(prev => prev.filter(k => k.word !== kw.word))}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+
+            {/* Add Custom Keywords Section */}
+            <div className="border p-4 rounded-md bg-muted/20">
+              <h3 className="text-sm font-medium mb-2">Add Your Own Keywords</h3>
+              <div className="flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="Enter a custom keyword..."
+                  value={newKeyword}
+                  onChange={(e) => setNewKeyword(e.target.value)}
+                  className="flex-1"
+                />
+                <Button
+                  variant="default"
+                  onClick={(e) => addCustomKeyword(e, 'include')}
+                  disabled={!newKeyword.trim()}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Include
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={(e) => addCustomKeyword(e, 'exclude')}
+                  disabled={!newKeyword.trim()}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Exclude
+                </Button>
+              </div>
+            </div>
+
+            {/* Suggested Keywords Section */}
+            <div>
+              <h3 className="text-sm font-medium mb-2">Suggested Keywords</h3>
+              <div className="flex flex-wrap gap-2">
+                {(keywordsData?.suggested_keywords || []).map((keyword: Keyword) => {
+                  const isIncluded = includedKeywords.includes(keyword.word);
+                  const isExcluded = excludedKeywords.some(k => k.word === keyword.word);
+
+                  return (
+                    <Badge
+                      key={`suggested-${keyword.word}`}
+                      variant={isIncluded ? "default" : isExcluded ? "destructive" : "outline"}
+                      className="text-sm py-1 px-3 cursor-pointer hover:bg-muted/50"
+                    >
+                      <span className="mr-1">{keyword.word}</span>
+                      <span className="text-xs text-muted-foreground">({keyword.score.toFixed(1)})</span>
+                      <div className="ml-2 inline-flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={`h-4 w-4 ${isIncluded ? 'bg-green-500/40' : 'hover:bg-green-500/20'}`}
+                          onClick={() => toggleKeyword(keyword.word, 'include')}
+                        >
+                          <Check className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={`h-4 w-4 ${isExcluded ? 'bg-red-500/40' : 'hover:bg-red-500/20'}`}
+                          onClick={() => toggleKeyword(keyword.word, 'exclude')}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </Badge>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+        <CardFooter className="flex justify-between border-t p-6">
+          <div className="text-sm text-muted-foreground">
+            <span className="font-semibold">{includedKeywords.length}</span> keywords included,{" "}
+            <span className="font-semibold">{excludedKeywords.length}</span> keywords excluded
+          </div>
+          <Button
+            onClick={() => updateKeywordsMutation.mutate()}
+            disabled={updateKeywordsMutation.isPending}
+          >
+            {updateKeywordsMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowRight className="mr-2 h-4 w-4" />
+            )}
+            Continue to Citation Labeling
+          </Button>
+        </CardFooter>
+      </Card>
+
+      <FrequencyDialog
+        isOpen={showFrequencyDialog}
+        onClose={() => setShowFrequencyDialog(false)}
+        onConfirm={(frequency) => handleExcludeWithFrequency(selectedKeyword, frequency)}
+      />
+    </div>
+  );
+}
