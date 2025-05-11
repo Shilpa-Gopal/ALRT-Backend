@@ -319,11 +319,45 @@ def train_model(project_id):
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
+    # Process citations based on exclude keywords
+    citations = Citation.query.filter_by(project_id=project_id).all()
+    excluded_citations = []
+    exclude_reasons = {}
+
+    for citation in citations:
+        text = f"{citation.title} {citation.abstract}".lower()
+        for exclude_kw in project.keywords.get('exclude', []):
+            word = exclude_kw['word'].lower()
+            frequency = exclude_kw.get('frequency', 1)
+            occurrences = text.count(word)
+            
+            if occurrences >= frequency:
+                excluded_citations.append(citation.id)
+                if word not in exclude_reasons:
+                    exclude_reasons[word] = {'frequency': frequency, 'count': 0}
+                exclude_reasons[word]['count'] += 1
+                break
+
+    # Filter out excluded citations
+    Citation.query.filter(Citation.id.in_(excluded_citations)).update(
+        {Citation.is_relevant: False}, synchronize_session=False
+    )
+    db.session.commit()
+
     review_system = LiteratureReviewSystem(project_id)
     result = review_system.train_iteration(project.current_iteration)
 
     if 'error' in result:
         return jsonify(result), 400
+
+    # Add exclusion metadata to result
+    result['excluded_citations'] = {
+        'total': len(excluded_citations),
+        'reasons': [
+            {'keyword': k, 'frequency': v['frequency'], 'citations_excluded': v['count']}
+            for k, v in exclude_reasons.items()
+        ]
+    }
 
     project.model_metrics[str(project.current_iteration)] = result['metrics']
     project.current_iteration += 1
@@ -379,9 +413,18 @@ def update_keywords(project_id):
         return jsonify({"error": "Project not found"}), 404
 
     data = request.get_json()
-    if not isinstance(data, dict) or not all(k in data
-                                             for k in ['include', 'exclude']):
+    if not isinstance(data, dict) or not all(k in data for k in ['include', 'exclude']):
         return jsonify({"error": "Invalid keywords format"}), 400
+
+    # Validate exclude keywords format
+    if not all(isinstance(item, dict) and 'word' in item and 'frequency' in item 
+              for item in data['exclude']):
+        return jsonify({"error": "Invalid exclude keywords format"}), 400
+
+    # Set default frequency of 1 if not specified
+    for item in data['exclude']:
+        if not isinstance(item['frequency'], int) or item['frequency'] < 1:
+            item['frequency'] = 1
 
     project.keywords = data
     db.session.commit()

@@ -17,7 +17,7 @@ class Project(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     citations = db.relationship('Citation', backref='project', lazy=True)
     current_iteration = db.Column(db.Integer, default=0)
-    keywords = db.Column(db.JSON, default=dict)
+    keywords = db.Column(db.JSON, default=lambda: {"include": [], "exclude": []})
     model_metrics = db.Column(db.JSON, default=dict)
 
 class Citation(db.Model):
