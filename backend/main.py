@@ -389,15 +389,12 @@ def get_keywords(project_id):
     feature_names = vectorizer.get_feature_names_out()
     scores = tfidf_matrix.sum(axis=0).A1
 
-    # Sort keywords by score
-    keywords = [{
-        "word": word,
-        "score": float(score)
-    } for word, score in zip(feature_names, scores)]
-    keywords.sort(key=lambda x: x['score'], reverse=True)
+    # Get top 50 keywords by TF-IDF score but only return the words
+    top_indices = scores.argsort()[-50:][::-1]  
+    suggested_keywords = [{"word": feature_names[i]} for i in top_indices]
 
     return jsonify({
-        "suggested_keywords": keywords[:50],
+        "suggested_keywords": suggested_keywords,
         "selected_keywords": project.keywords
     })
 
