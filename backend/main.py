@@ -316,9 +316,14 @@ def send_reset_email(email, reset_token):
             app.logger.error("Brevo API key not configured")
             return False
 
-        # Create reset URL
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
-        reset_url = f"{frontend_url}/reset-password?token={reset_token}"
+        # Create reset URL - use production URL if available, otherwise development URL
+        frontend_url = os.getenv('FRONTEND_URL', 'https://alrt-shilpagopal1.replit.app')
+        
+        # If in development mode (when DATABASE_URL contains localhost or is not set for production)
+        if not os.getenv('DATABASE_URL') or 'localhost' in os.getenv('DATABASE_URL', ''):
+            frontend_url = 'https://2a8d36cb-3602-46e2-82dc-3d70be763e17-00-1bnxhzpxbgva9.janeway.replit.dev'
+        
+        reset_url = f"{frontend_url}/reset-password/{reset_token}"
 
         # Prepare email data
         url = "https://api.brevo.com/v3/smtp/email"
