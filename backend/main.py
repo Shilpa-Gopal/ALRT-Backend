@@ -303,6 +303,133 @@ def login():
     })
 
 
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def forgot_password():
+    try:
+        data = request.get_json()
+        
+        if not data or 'email' not in data:
+            return jsonify({"error": "Email is required"}), 400
+        
+        email = data['email'].strip().lower()
+        user = User.query.filter_by(email=email).first()
+        
+        if not user:
+            # For security, don't reveal if email exists or not
+            return jsonify({"message": "If an account with this email exists, a password reset link has been sent."}), 200
+        
+        # Generate a simple reset token (in production, use JWT or secure tokens)
+        import secrets
+        reset_token = secrets.token_urlsafe(32)
+        
+        # Store the reset token in user record (you'll need to add this field to User model)
+        # For now, we'll simulate this with a simple in-memory store
+        if not hasattr(app, 'reset_tokens'):
+            app.reset_tokens = {}
+        
+        # Store token with expiration (30 minutes)
+        import time
+        app.reset_tokens[reset_token] = {
+            'user_id': user.id,
+            'email': user.email,
+            'expires_at': time.time() + 1800  # 30 minutes
+        }
+        
+        app.logger.info(f"Password reset token generated for user {user.email}")
+        
+        # In a real application, you would send an email here
+        # For development, we'll return the token (remove this in production)
+        return jsonify({
+            "message": "If an account with this email exists, a password reset link has been sent.",
+            "reset_token": reset_token  # Only for development - remove in production
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Forgot password error: {str(e)}")
+        return jsonify({"error": "Failed to process request"}), 500
+
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    try:
+        data = request.get_json()
+        
+        if not data or not all(k in data for k in ["token", "new_password"]):
+            return jsonify({"error": "Token and new password are required"}), 400
+        
+        token = data['token']
+        new_password = data['new_password']
+        
+        # Validate password strength
+        if len(new_password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters long"}), 400
+        
+        # Check if token exists and is valid
+        if not hasattr(app, 'reset_tokens') or token not in app.reset_tokens:
+            return jsonify({"error": "Invalid or expired reset token"}), 400
+        
+        token_data = app.reset_tokens[token]
+        
+        # Check if token has expired
+        import time
+        if time.time() > token_data['expires_at']:
+            del app.reset_tokens[token]
+            return jsonify({"error": "Reset token has expired"}), 400
+        
+        # Find the user
+        user = User.query.get(token_data['user_id'])
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Update the password
+        user.password = generate_password_hash(new_password)
+        db.session.commit()
+        
+        # Remove the used token
+        del app.reset_tokens[token]
+        
+        app.logger.info(f"Password reset successful for user {user.email}")
+        
+        return jsonify({"message": "Password reset successful"}), 200
+        
+    except Exception as e:
+        app.logger.error(f"Reset password error: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to reset password"}), 500
+
+
+@app.route('/api/auth/verify-reset-token', methods=['POST'])
+def verify_reset_token():
+    try:
+        data = request.get_json()
+        
+        if not data or 'token' not in data:
+            return jsonify({"error": "Token is required"}), 400
+        
+        token = data['token']
+        
+        # Check if token exists and is valid
+        if not hasattr(app, 'reset_tokens') or token not in app.reset_tokens:
+            return jsonify({"valid": False, "error": "Invalid reset token"}), 400
+        
+        token_data = app.reset_tokens[token]
+        
+        # Check if token has expired
+        import time
+        if time.time() > token_data['expires_at']:
+            del app.reset_tokens[token]
+            return jsonify({"valid": False, "error": "Reset token has expired"}), 400
+        
+        return jsonify({
+            "valid": True,
+            "email": token_data['email']
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Verify reset token error: {str(e)}")
+        return jsonify({"valid": False, "error": "Failed to verify token"}), 500
+
+
 @app.route('/api/projects', methods=['GET'])
 def get_projects():
     user_id = request.headers.get('X-User-Id')
@@ -820,19 +947,29 @@ def delete_project(project_id):
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        # Convert user_id to integer for proper filtering
+        user_id_int = int(user_id)
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
-        Citation.query.filter_by(project_id=project_id).delete()
+        app.logger.info(f"Deleting project {project_id} for user {user_id_int}")
+        
+        # Delete all citations first
+        citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
+        app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
+        
+        # Delete the project
         db.session.delete(project)
         db.session.commit()
         
-        return '', 204
+        app.logger.info(f"Successfully deleted project {project_id}")
+        return jsonify({"message": "Project deleted successfully"}), 200
 
     except Exception as e:
+        app.logger.error(f"Error deleting project {project_id}: {str(e)}")
         db.session.rollback()
-        return jsonify({"error": "Failed to delete project"}), 500
+        return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
 
 @app.route('/api/projects/<int:project_id>/labeled-citations', methods=['GET'])
 def get_labeled_citations(project_id):
