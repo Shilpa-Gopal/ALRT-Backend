@@ -14,6 +14,7 @@ from app.models import User, Project, Citation
 from app.ml_system import LiteratureReviewSystem
 import hashlib
 import re
+import requests
 
 app = create_app()
 
@@ -38,7 +39,7 @@ def find_year_column(df):
     """Find year-related column in dataframe (case insensitive)"""
     year_patterns = ['year', 'publication_year', 'pub_year', 'published_year', 
                     'publication_date', 'pub_date', 'date', 'published']
-    
+
     for col in df.columns:
         for pattern in year_patterns:
             if pattern.lower() in col.lower():
@@ -49,7 +50,7 @@ def extract_year_from_value(value):
     """Extract year from various date formats"""
     if pd.isna(value):
         return None
-    
+
     value_str = str(value)
     year_match = re.search(r'\b(19|20)\d{2}\b', value_str)
     if year_match:
@@ -61,26 +62,26 @@ def calculate_completeness_score(row):
     score = 0
     total_fields = len(row)
     filled_fields = sum(1 for val in row if pd.notna(val) and str(val).strip())
-    
+
     # Base score from field completion
     score += (filled_fields / total_fields) * 50
-    
+
     # Additional score for abstract length
     if pd.notna(row.get('abstract')):
         abstract_len = len(str(row['abstract']))
         score += min(abstract_len / 10, 50)
-    
+
     return score
 
 def process_duplicates_and_create_citations(df, project_id, current_iteration):
     """Optimized duplicate processing using vectorization and hashing"""
-    
+
     app.logger.info(f"Processing {len(df)} citations for duplicates")
-    
+
     # Normalize column names
     df_normalized = df.copy()
     df_normalized.columns = df_normalized.columns.str.lower()
-    
+
     # Check required columns
     if 'title' not in df_normalized.columns or 'abstract' not in df_normalized.columns:
         return {
@@ -90,7 +91,7 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
             'removal_strategy': '',
             'duplicate_details': []
         }
-    
+
     # Find optional columns
     year_col = find_year_column(df)
     authors_col = None
@@ -98,22 +99,22 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
         if 'author' in col.lower():
             authors_col = col
             break
-    
+
     # Step 1: Quick hash-based duplicate detection for exact matches
     df['text_hash'] = df.apply(lambda row: create_text_hash(
         row['title'], 
         row['abstract'], 
         row.get(authors_col) if authors_col else None
     ), axis=1)
-    
+
     # Step 2: Group by hash to find exact duplicates
     hash_groups = df.groupby('text_hash')
-    
+
     # Step 3: For groups with multiple items, apply selection strategy
     final_citations = []
     duplicate_details = []
     removal_strategy = "Hash-based with TF-IDF similarity fallback"
-    
+
     for hash_val, group in hash_groups:
         if len(group) == 1:
             # No duplicates
@@ -121,15 +122,15 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
         else:
             # Handle duplicates within this group
             app.logger.info(f"Found {len(group)} potential duplicates")
-            
+
             # Select best citation from this group
             best_citation = select_best_citation(group, year_col, duplicate_details)
             final_citations.append(best_citation)
-    
+
     # Step 4: For remaining potential near-duplicates, use TF-IDF
     if len(final_citations) > 1:
         final_citations = remove_similar_citations(final_citations, authors_col, duplicate_details)
-    
+
     # Create Citation objects
     new_citations = []
     for _, row in enumerate(final_citations):
@@ -140,10 +141,10 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
             iteration=current_iteration
         )
         new_citations.append(citation)
-    
+
     duplicates_removed = len(df) - len(new_citations)
     app.logger.info(f"Removed {duplicates_removed} duplicates, keeping {len(new_citations)} citations")
-    
+
     return {
         'error': None,
         'citations': new_citations,
@@ -156,16 +157,16 @@ def select_best_citation(group, year_col, duplicate_details):
     """Select the best citation from a group of duplicates"""
     if len(group) == 1:
         return group.iloc[0]
-    
+
     # Strategy 1: Use year if available
     if year_col:
         group['year_extracted'] = group[year_col].apply(extract_year_from_value)
         valid_years = group[group['year_extracted'].notna()]
-        
+
         if len(valid_years) > 0:
             # Keep the most recent
             best = valid_years.loc[valid_years['year_extracted'].idxmax()]
-            
+
             # Log the duplicate removal
             for _, other in group.iterrows():
                 if other.name != best.name:
@@ -174,13 +175,13 @@ def select_best_citation(group, year_col, duplicate_details):
                         'removed': f"{other['title'][:50]}...",
                         'reason': f'Year-based selection'
                     })
-            
+
             return best
-    
+
     # Strategy 2: Use completeness score
     group['completeness'] = group.apply(calculate_completeness_score, axis=1)
     best = group.loc[group['completeness'].idxmax()]
-    
+
     # Log the duplicate removal
     for _, other in group.iterrows():
         if other.name != best.name:
@@ -189,14 +190,14 @@ def select_best_citation(group, year_col, duplicate_details):
                 'removed': f"{other['title'][:50]}...",
                 'reason': f'Completeness-based selection'
             })
-    
+
     return best
 
 def remove_similar_citations(citations_list, authors_col, duplicate_details):
     """Use TF-IDF to find and remove similar citations"""
     if len(citations_list) < 2:
         return citations_list
-    
+
     # Prepare text for TF-IDF
     texts = []
     for citation in citations_list:
@@ -204,13 +205,13 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
         if authors_col and pd.notna(citation.get(authors_col)):
             text += f" {normalize_text(citation[authors_col])}"
         texts.append(text)
-    
+
     # Calculate TF-IDF similarity only if we have enough text variation
     try:
         vectorizer = TfidfVectorizer(max_features=500, stop_words='english', ngram_range=(1, 2))
         tfidf_matrix = vectorizer.fit_transform(texts)
         similarity_matrix = cosine_similarity(tfidf_matrix)
-        
+
         # Find similar pairs (above 70% similarity)
         to_remove = set()
         for i in range(len(similarity_matrix)):
@@ -219,10 +220,10 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
                     # Keep the one with higher completeness
                     citation_i = citations_list[i]
                     citation_j = citations_list[j]
-                    
+
                     score_i = calculate_completeness_score(citation_i)
                     score_j = calculate_completeness_score(citation_j)
-                    
+
                     if score_i >= score_j:
                         to_remove.add(j)
                         duplicate_details.append({
@@ -237,10 +238,10 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
                             'removed': f"{citation_i['title'][:50]}...",
                             'reason': f'TF-IDF similarity: {similarity_matrix[i][j]:.2f}'
                         })
-        
+
         # Return citations not in removal set
         return [citation for i, citation in enumerate(citations_list) if i not in to_remove]
-        
+
     except Exception as e:
         app.logger.warning(f"TF-IDF similarity calculation failed: {e}")
         return citations_list
@@ -303,30 +304,116 @@ def login():
     })
 
 
+def send_reset_email(email, reset_token):
+    """Send password reset email using Brevo API"""
+    try:
+        # Brevo API configuration
+        api_key = os.getenv('BREVO_API_KEY')
+        sender_email = os.getenv('SENDER_EMAIL', 'noreply@yourapp.com')
+        sender_name = os.getenv('SENDER_NAME', 'Literature Review Tool')
+
+        if not api_key:
+            app.logger.error("Brevo API key not configured")
+            return False
+
+        # Create reset URL
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        reset_url = f"{frontend_url}/reset-password?token={reset_token}"
+
+        # Prepare email data
+        url = "https://api.brevo.com/v3/smtp/email"
+
+        headers = {
+            "accept": "application/json",
+            "api-key": api_key,
+            "content-type": "application/json"
+        }
+
+        payload = {
+            "sender": {
+                "name": sender_name,
+                "email": sender_email
+            },
+            "to": [
+                {
+                    "email": email,
+                    "name": email.split('@')[0]
+                }
+            ],
+            "subject": "Password Reset Request",
+            "htmlContent": f"""
+            <html>
+            <body>
+                <h2>Password Reset Request</h2>
+                <p>Hi,</p>
+                <p>You requested a password reset for your account.</p>
+                <p><a href="{reset_url}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Reset Password</a></p>
+                <p>Or copy and paste this link: {reset_url}</p>
+                <p>This link will expire in 30 minutes.</p>
+                <p>If you didn't request this reset, please ignore this email.</p>
+                <br>
+                <p>Best regards,<br>Literature Review Tool Team</p>
+            </body>
+            </html>
+            """,
+            "textContent": f"""
+            Password Reset Request
+
+            Hi,
+
+            You requested a password reset for your account.
+
+            Click the link below to reset your password:
+            {reset_url}
+
+            This link will expire in 30 minutes.
+
+            If you didn't request this reset, please ignore this email.
+
+            Best regards,
+            Literature Review Tool Team
+            """
+        }
+
+        # Send email via Brevo API
+        response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code == 201:
+            app.logger.info(f"Password reset email sent successfully to {email} via Brevo")
+            return True
+        else:
+            app.logger.error(f"Brevo API error: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        app.logger.error(f"Failed to send email via Brevo: {str(e)}")
+        return False
+
+
 @app.route('/api/auth/forgot-password', methods=['POST'])
 def forgot_password():
     try:
         data = request.get_json()
-        
+
         if not data or 'email' not in data:
             return jsonify({"error": "Email is required"}), 400
-        
+
         email = data['email'].strip().lower()
         user = User.query.filter_by(email=email).first()
-        
+
         if not user:
             # For security, don't reveal if email exists or not
             return jsonify({"message": "If an account with this email exists, a password reset link has been sent."}), 200
-        
+
         # Generate a simple reset token (in production, use JWT or secure tokens)
         import secrets
         reset_token = secrets.token_urlsafe(32)
-        
+
         # Store the reset token in user record (you'll need to add this field to User model)
         # For now, we'll simulate this with a simple in-memory store
         if not hasattr(app, 'reset_tokens'):
             app.reset_tokens = {}
-        
+
         # Store token with expiration (30 minutes)
         import time
         app.reset_tokens[reset_token] = {
@@ -334,16 +421,19 @@ def forgot_password():
             'email': user.email,
             'expires_at': time.time() + 1800  # 30 minutes
         }
-        
+
         app.logger.info(f"Password reset token generated for user {user.email}")
-        
+
         # In a real application, you would send an email here
-        # For development, we'll return the token (remove this in production)
-        return jsonify({
-            "message": "If an account with this email exists, a password reset link has been sent.",
-            "reset_token": reset_token  # Only for development - remove in production
-        }), 200
-        
+        if send_reset_email(user.email, reset_token):
+            return jsonify({
+                "message": "If an account with this email exists, a password reset link has been sent."
+            }), 200
+        else:
+             return jsonify({
+                "message": "Failed to send password reset email."
+            }), 500
+
     except Exception as e:
         app.logger.error(f"Forgot password error: {str(e)}")
         return jsonify({"error": "Failed to process request"}), 500
@@ -353,45 +443,45 @@ def forgot_password():
 def reset_password():
     try:
         data = request.get_json()
-        
+
         if not data or not all(k in data for k in ["token", "new_password"]):
             return jsonify({"error": "Token and new password are required"}), 400
-        
+
         token = data['token']
         new_password = data['new_password']
-        
+
         # Validate password strength
         if len(new_password) < 6:
             return jsonify({"error": "Password must be at least 6 characters long"}), 400
-        
+
         # Check if token exists and is valid
         if not hasattr(app, 'reset_tokens') or token not in app.reset_tokens:
             return jsonify({"error": "Invalid or expired reset token"}), 400
-        
+
         token_data = app.reset_tokens[token]
-        
+
         # Check if token has expired
         import time
         if time.time() > token_data['expires_at']:
             del app.reset_tokens[token]
             return jsonify({"error": "Reset token has expired"}), 400
-        
+
         # Find the user
         user = User.query.get(token_data['user_id'])
         if not user:
             return jsonify({"error": "User not found"}), 404
-        
+
         # Update the password
         user.password = generate_password_hash(new_password)
         db.session.commit()
-        
+
         # Remove the used token
         del app.reset_tokens[token]
-        
+
         app.logger.info(f"Password reset successful for user {user.email}")
-        
+
         return jsonify({"message": "Password reset successful"}), 200
-        
+
     except Exception as e:
         app.logger.error(f"Reset password error: {str(e)}")
         db.session.rollback()
@@ -402,29 +492,29 @@ def reset_password():
 def verify_reset_token():
     try:
         data = request.get_json()
-        
+
         if not data or 'token' not in data:
             return jsonify({"error": "Token is required"}), 400
-        
+
         token = data['token']
-        
+
         # Check if token exists and is valid
         if not hasattr(app, 'reset_tokens') or token not in app.reset_tokens:
             return jsonify({"valid": False, "error": "Invalid reset token"}), 400
-        
+
         token_data = app.reset_tokens[token]
-        
+
         # Check if token has expired
         import time
         if time.time() > token_data['expires_at']:
             del app.reset_tokens[token]
             return jsonify({"valid": False, "error": "Reset token has expired"}), 400
-        
+
         return jsonify({
             "valid": True,
             "email": token_data['email']
         }), 200
-        
+
     except Exception as e:
         app.logger.error(f"Verify reset token error: {str(e)}")
         return jsonify({"valid": False, "error": "Failed to verify token"}), 500
@@ -441,7 +531,7 @@ def get_projects():
         user_id_int = int(user_id)
         projects = Project.query.filter_by(user_id=user_id_int).all()
         app.logger.info(f"Found {len(projects)} projects for user {user_id_int}")
-        
+
         return jsonify({
             "projects": [{
                 "id": p.id,
@@ -459,7 +549,7 @@ def create_project():
     try:
         app.logger.info("Received project creation request")
         app.logger.info(f"Headers: {dict(request.headers)}")
-        
+
         user_id = request.headers.get('X-User-Id')
         if not user_id:
             app.logger.error("No user ID in request headers")
@@ -467,11 +557,11 @@ def create_project():
 
         data = request.get_json()
         app.logger.info(f"Request data: {data}")
-        
+
         if not data:
             app.logger.error("No JSON data received")
             return jsonify({"error": "No data provided"}), 400
-            
+
         if 'name' not in data:
             app.logger.error("No project name in request data")
             return jsonify({"error": "Project name is required"}), 400
@@ -486,7 +576,7 @@ def create_project():
         db.session.add(project)
         db.session.commit()
         db.session.refresh(project)
-        
+
         app.logger.info(f"Project created successfully with ID: {project.id}")
         return jsonify({
             "project": {
@@ -496,7 +586,7 @@ def create_project():
                 "current_iteration": project.current_iteration
             }
         }), 201
-        
+
     except Exception as e:
         app.logger.error(f"Project creation error: {str(e)}")
         db.session.rollback()
@@ -513,7 +603,7 @@ def add_citations(project_id):
         app.logger.info(f"Request headers: {dict(request.headers)}")
         app.logger.info(f"Request files: {request.files}")
         app.logger.info(f"Request form: {request.form}")
-        
+
         user_id = request.headers.get('X-User-Id')
         if not user_id:
             app.logger.error("No user ID in request headers")
@@ -540,7 +630,7 @@ def add_citations(project_id):
         else:
             file = request.files['file']
             app.logger.info(f"Received file: {file.filename if file else 'No file'}")
-            
+
             if not file or file.filename == '':
                 app.logger.error("No file provided or empty filename")
                 return jsonify({"error": "No file provided"}), 400
@@ -560,7 +650,7 @@ def add_citations(project_id):
                 temp_path = os.path.join('/tmp', secure_filename(file.filename))
                 file.save(temp_path)
                 app.logger.info(f"Saved file temporarily: {temp_path}")
-                
+
                 try:
                     if file.filename.endswith('.csv'):
                         app.logger.info("Processing CSV file")
@@ -575,14 +665,14 @@ def add_citations(project_id):
                             "error": "Unsupported file format",
                             "details": f"File {file.filename} is not supported. Only .csv and .xlsx files are allowed"
                         }), 400
-                    
+
                     # Check file size limits for performance
                     if len(df) > 10000:
                         return jsonify({
                             "error": "File too large",
                             "details": f"File contains {len(df)} rows. Maximum supported is 10,000 rows for optimal performance."
                         }), 400
-                    
+
                     # Clean up temp file
                     os.remove(temp_path)
                 except Exception as e:
@@ -620,7 +710,7 @@ def add_citations(project_id):
 
                 db.session.bulk_save_objects(new_citations)
                 db.session.commit()
-                
+
                 return jsonify({
                     "message": f"Added {len(new_citations)} citations",
                     "total_citations": len(new_citations),
@@ -706,7 +796,7 @@ def train_model(project_id):
             word = exclude_kw['word'].lower()
             frequency = exclude_kw.get('frequency', 1)
             occurrences = text.count(word)
-            
+
             if occurrences >= frequency:
                 excluded_citations.append(citation.id)
                 if word not in exclude_reasons:
@@ -880,10 +970,10 @@ def download_results(project_id):
             'iteration': citation.iteration,
             'relevance_score': relevance_score
         })
-    
+
     # Sort by relevance score in descending order
     data_rows.sort(key=lambda x: x['relevance_score'], reverse=True)
-    
+
     # Write sorted data
     for row, data in enumerate(data_rows, start=2):
         worksheet.cell(row=row, column=1, value=data['title'])
@@ -954,15 +1044,15 @@ def delete_project(project_id):
             return jsonify({"error": "Project not found"}), 404
 
         app.logger.info(f"Deleting project {project_id} for user {user_id_int}")
-        
+
         # Delete all citations first
         citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
         app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
-        
+
         # Delete the project
         db.session.delete(project)
         db.session.commit()
-        
+
         app.logger.info(f"Successfully deleted project {project_id}")
         return jsonify({"message": "Project deleted successfully"}), 200
 
@@ -1007,7 +1097,7 @@ def remove_duplicates(project_id):
 
         # Get all citations for this project
         citations = Citation.query.filter_by(project_id=project_id).all()
-        
+
         if not citations:
             return jsonify({"error": "No citations found in this project"}), 404
 
@@ -1024,12 +1114,12 @@ def remove_duplicates(project_id):
                 'iteration': citation.iteration,
                 'index': i
             })
-        
+
         df = pd.DataFrame(citations_data)
-        
+
         # Apply the advanced duplicate processing logic
         result = process_advanced_duplicates(df)
-        
+
         if result['error']:
             return jsonify({"error": result['error']}), 400
 
@@ -1042,7 +1132,7 @@ def remove_duplicates(project_id):
         duplicates_removed = len(citations_to_remove)
         for citation in citations_to_remove:
             db.session.delete(citation)
-        
+
         db.session.commit()
         app.logger.info(f"Removed {duplicates_removed} duplicate citations from project {project_id}")
 
@@ -1066,9 +1156,9 @@ def remove_duplicates(project_id):
 
 def process_advanced_duplicates(df):
     """Advanced duplicate processing with multiple strategies"""
-    
+
     app.logger.info(f"Processing {len(df)} citations for advanced duplicate detection")
-    
+
     duplicate_details = []
     processing_summary = {
         'exact_duplicates_found': 0,
@@ -1076,16 +1166,16 @@ def process_advanced_duplicates(df):
         'hash_groups_processed': 0,
         'tfidf_comparisons': 0
     }
-    
+
     try:
         # Step 1: Exact duplicate detection using text hashing
         df['text_hash'] = df.apply(lambda row: create_text_hash(row['title'], row['abstract']), axis=1)
         hash_groups = df.groupby('text_hash')
         processing_summary['hash_groups_processed'] = len(hash_groups)
-        
+
         # Step 2: Process each hash group
         kept_indices = []
-        
+
         for hash_val, group in hash_groups:
             if len(group) == 1:
                 # No duplicates in this group
@@ -1094,21 +1184,21 @@ def process_advanced_duplicates(df):
                 # Multiple citations with same hash - exact duplicates
                 processing_summary['exact_duplicates_found'] += len(group) - 1
                 app.logger.info(f"Found {len(group)} exact duplicates with hash {hash_val[:8]}...")
-                
+
                 # Select best citation from exact duplicates
                 best_citation = select_best_citation_advanced(group, duplicate_details)
                 kept_indices.append(best_citation['index'])
-        
+
         # Step 3: TF-IDF similarity analysis on remaining citations
         if len(kept_indices) > 1:
             app.logger.info(f"Running TF-IDF similarity analysis on {len(kept_indices)} remaining citations")
-            
+
             # Get the kept citations for similarity analysis
             remaining_df = df[df['index'].isin(kept_indices)].copy()
-            
+
             # Calculate TF-IDF similarity matrix
             similarity_result = calculate_tfidf_similarity(remaining_df, duplicate_details)
-            
+
             if similarity_result['success']:
                 # Update kept indices based on similarity analysis
                 final_indices = similarity_result['kept_indices']
@@ -1117,9 +1207,9 @@ def process_advanced_duplicates(df):
                 kept_indices = final_indices
             else:
                 app.logger.warning(f"TF-IDF analysis failed: {similarity_result['error']}")
-        
+
         removal_strategy = f"Multi-stage: Hash-based exact duplicate detection + TF-IDF similarity analysis (threshold: 0.75)"
-        
+
         return {
             'error': None,
             'kept_indices': kept_indices,
@@ -1127,7 +1217,7 @@ def process_advanced_duplicates(df):
             'duplicate_details': duplicate_details,
             'processing_summary': processing_summary
         }
-        
+
     except Exception as e:
         app.logger.error(f"Advanced duplicate processing failed: {str(e)}")
         return {
@@ -1141,10 +1231,10 @@ def process_advanced_duplicates(df):
 
 def select_best_citation_advanced(group, duplicate_details):
     """Select the best citation from a group of exact duplicates using multiple criteria"""
-    
+
     if len(group) == 1:
         return group.iloc[0]
-    
+
     # Strategy 1: Prioritize labeled citations (those with relevance feedback)
     labeled_citations = group[group['is_relevant'].notna()]
     if len(labeled_citations) > 0:
@@ -1154,7 +1244,7 @@ def select_best_citation_advanced(group, duplicate_details):
             best = relevant_citations.iloc[0]
         else:
             best = labeled_citations.iloc[0]
-        
+
         # Log the selection reason
         for _, other in group.iterrows():
             if other['index'] != best['index']:
@@ -1164,12 +1254,12 @@ def select_best_citation_advanced(group, duplicate_details):
                     'reason': f'Prioritized labeled citation (relevance: {best["is_relevant"]})'
                 })
         return best
-    
+
     # Strategy 2: Use completeness score (abstract length, title quality)
     group_copy = group.copy()
     group_copy['completeness_score'] = group_copy.apply(calculate_advanced_completeness_score, axis=1)
     best = group_copy.loc[group_copy['completeness_score'].idxmax()]
-    
+
     # Log the selection reason
     for _, other in group.iterrows():
         if other['index'] != best['index']:
@@ -1178,14 +1268,14 @@ def select_best_citation_advanced(group, duplicate_details):
                 'removed': f"{other['title'][:50]}...",
                 'reason': f'Higher completeness score ({best["completeness_score"]:.2f})'
             })
-    
+
     return best
 
 
 def calculate_advanced_completeness_score(row):
     """Calculate a comprehensive completeness score for citation quality"""
     score = 0
-    
+
     # Title quality (10-40 points)
     title_len = len(str(row['title'])) if pd.notna(row['title']) else 0
     if title_len > 100:
@@ -1196,7 +1286,7 @@ def calculate_advanced_completeness_score(row):
         score += 20
     else:
         score += 10
-    
+
     # Abstract quality (20-50 points)
     abstract_len = len(str(row['abstract'])) if pd.notna(row['abstract']) else 0
     if abstract_len > 1000:
@@ -1209,27 +1299,27 @@ def calculate_advanced_completeness_score(row):
         score += 20
     else:
         score += 10
-    
+
     # Bonus for being labeled (10 points)
     if pd.notna(row['is_relevant']):
         score += 10
-    
+
     return score
 
 
 def calculate_tfidf_similarity(df, duplicate_details):
     """Calculate TF-IDF similarity and remove similar citations"""
-    
+
     try:
         # Prepare text for TF-IDF analysis
         texts = []
         for _, row in df.iterrows():
             text = f"{normalize_text(row['title'])} {normalize_text(row['abstract'])}"
             texts.append(text)
-        
+
         if len(texts) < 2:
             return {'success': True, 'kept_indices': df['index'].tolist(), 'comparisons_made': 0}
-        
+
         # Calculate TF-IDF vectors
         vectorizer = TfidfVectorizer(
             max_features=1000, 
@@ -1238,27 +1328,27 @@ def calculate_tfidf_similarity(df, duplicate_details):
             min_df=1,
             max_df=0.95
         )
-        
+
         tfidf_matrix = vectorizer.fit_transform(texts)
         similarity_matrix = cosine_similarity(tfidf_matrix)
-        
+
         # Find similar pairs using higher threshold (75% similarity)
         similarity_threshold = 0.75
         to_remove = set()
         comparisons_made = 0
-        
+
         for i in range(len(similarity_matrix)):
             for j in range(i + 1, len(similarity_matrix)):
                 comparisons_made += 1
                 similarity_score = similarity_matrix[i][j]
-                
+
                 if similarity_score > similarity_threshold:
                     row_i = df.iloc[i]
                     row_j = df.iloc[j]
-                    
+
                     # Decide which one to keep based on multiple criteria
                     keep_i = should_keep_citation_i(row_i, row_j)
-                    
+
                     if keep_i:
                         to_remove.add(j)
                         duplicate_details.append({
@@ -1273,16 +1363,16 @@ def calculate_tfidf_similarity(df, duplicate_details):
                             'removed': f"{row_i['title'][:50]}...",
                             'reason': f'TF-IDF similarity: {similarity_score:.3f} (threshold: {similarity_threshold})'
                         })
-        
+
         # Return indices of citations to keep
         kept_indices = [df.iloc[i]['index'] for i in range(len(df)) if i not in to_remove]
-        
+
         return {
             'success': True,
             'kept_indices': kept_indices,
             'comparisons_made': comparisons_made
         }
-        
+
     except Exception as e:
         app.logger.warning(f"TF-IDF similarity calculation failed: {str(e)}")
         return {
@@ -1295,11 +1385,11 @@ def calculate_tfidf_similarity(df, duplicate_details):
 
 def should_keep_citation_i(citation_i, citation_j):
     """Decide which citation to keep when they are similar"""
-    
+
     # Priority 1: Keep labeled citations
     i_labeled = pd.notna(citation_i['is_relevant'])
     j_labeled = pd.notna(citation_j['is_relevant'])
-    
+
     if i_labeled and not j_labeled:
         return True
     elif j_labeled and not i_labeled:
@@ -1310,11 +1400,11 @@ def should_keep_citation_i(citation_i, citation_j):
             return True
         elif citation_j['is_relevant'] == True and citation_i['is_relevant'] != True:
             return False
-    
+
     # Priority 2: Compare completeness scores
     score_i = calculate_advanced_completeness_score(citation_i)
     score_j = calculate_advanced_completeness_score(citation_j)
-    
+
     return score_i >= score_j
 
 
