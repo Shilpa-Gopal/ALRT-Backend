@@ -874,31 +874,32 @@ def remove_duplicates(project_id):
         if not citations:
             return jsonify({"error": "No citations found in this project"}), 404
 
-        app.logger.info(f"Starting duplicate removal for project {project_id} with {len(citations)} citations")
+        app.logger.info(f"Starting advanced duplicate removal for project {project_id} with {len(citations)} citations")
 
-        # Simple hash-based duplicate detection
-        seen_hashes = set()
-        citations_to_keep = []
-        citations_to_remove = []
-        duplicate_details = []
+        # Convert citations to DataFrame for easier processing
+        citations_data = []
+        for i, citation in enumerate(citations):
+            citations_data.append({
+                'id': citation.id,
+                'title': citation.title,
+                'abstract': citation.abstract,
+                'is_relevant': citation.is_relevant,
+                'iteration': citation.iteration,
+                'index': i
+            })
+        
+        df = pd.DataFrame(citations_data)
+        
+        # Apply the advanced duplicate processing logic
+        result = process_advanced_duplicates(df)
+        
+        if result['error']:
+            return jsonify({"error": result['error']}), 400
 
-        for citation in citations:
-            # Create hash for this citation
-            citation_hash = create_text_hash(citation.title, citation.abstract)
-            
-            if citation_hash not in seen_hashes:
-                seen_hashes.add(citation_hash)
-                citations_to_keep.append(citation)
-            else:
-                citations_to_remove.append(citation)
-                # Find the original citation for logging
-                original = next((c for c in citations_to_keep if create_text_hash(c.title, c.abstract) == citation_hash), None)
-                if original:
-                    duplicate_details.append({
-                        'kept': f"{original.title[:50]}...",
-                        'removed': f"{citation.title[:50]}...",
-                        'reason': 'Exact duplicate (hash match)'
-                    })
+        # Get citation IDs to keep
+        kept_indices = result['kept_indices']
+        citations_to_keep = [citations[i] for i in kept_indices]
+        citations_to_remove = [citations[i] for i in range(len(citations)) if i not in kept_indices]
 
         # Remove duplicates from database
         duplicates_removed = len(citations_to_remove)
@@ -909,11 +910,12 @@ def remove_duplicates(project_id):
         app.logger.info(f"Removed {duplicates_removed} duplicate citations from project {project_id}")
 
         return jsonify({
-            "message": f"Duplicate removal completed",
+            "message": f"Advanced duplicate removal completed",
             "duplicates_removed": duplicates_removed,
             "remaining_citations": len(citations_to_keep),
-            "removal_strategy": "Hash-based exact duplicate detection",
-            "duplicate_details": duplicate_details[:5]  # Show first 5 examples
+            "removal_strategy": result['removal_strategy'],
+            "duplicate_details": result['duplicate_details'][:10],  # Show first 10 examples
+            "processing_summary": result['processing_summary']
         }), 200
 
     except Exception as e:
@@ -923,6 +925,260 @@ def remove_duplicates(project_id):
             "error": "Failed to remove duplicates",
             "details": str(e)
         }), 500
+
+
+def process_advanced_duplicates(df):
+    """Advanced duplicate processing with multiple strategies"""
+    
+    app.logger.info(f"Processing {len(df)} citations for advanced duplicate detection")
+    
+    duplicate_details = []
+    processing_summary = {
+        'exact_duplicates_found': 0,
+        'similar_duplicates_found': 0,
+        'hash_groups_processed': 0,
+        'tfidf_comparisons': 0
+    }
+    
+    try:
+        # Step 1: Exact duplicate detection using text hashing
+        df['text_hash'] = df.apply(lambda row: create_text_hash(row['title'], row['abstract']), axis=1)
+        hash_groups = df.groupby('text_hash')
+        processing_summary['hash_groups_processed'] = len(hash_groups)
+        
+        # Step 2: Process each hash group
+        kept_indices = []
+        
+        for hash_val, group in hash_groups:
+            if len(group) == 1:
+                # No duplicates in this group
+                kept_indices.append(group.iloc[0]['index'])
+            else:
+                # Multiple citations with same hash - exact duplicates
+                processing_summary['exact_duplicates_found'] += len(group) - 1
+                app.logger.info(f"Found {len(group)} exact duplicates with hash {hash_val[:8]}...")
+                
+                # Select best citation from exact duplicates
+                best_citation = select_best_citation_advanced(group, duplicate_details)
+                kept_indices.append(best_citation['index'])
+        
+        # Step 3: TF-IDF similarity analysis on remaining citations
+        if len(kept_indices) > 1:
+            app.logger.info(f"Running TF-IDF similarity analysis on {len(kept_indices)} remaining citations")
+            
+            # Get the kept citations for similarity analysis
+            remaining_df = df[df['index'].isin(kept_indices)].copy()
+            
+            # Calculate TF-IDF similarity matrix
+            similarity_result = calculate_tfidf_similarity(remaining_df, duplicate_details)
+            
+            if similarity_result['success']:
+                # Update kept indices based on similarity analysis
+                final_indices = similarity_result['kept_indices']
+                processing_summary['similar_duplicates_found'] = len(kept_indices) - len(final_indices)
+                processing_summary['tfidf_comparisons'] = similarity_result['comparisons_made']
+                kept_indices = final_indices
+            else:
+                app.logger.warning(f"TF-IDF analysis failed: {similarity_result['error']}")
+        
+        removal_strategy = f"Multi-stage: Hash-based exact duplicate detection + TF-IDF similarity analysis (threshold: 0.75)"
+        
+        return {
+            'error': None,
+            'kept_indices': kept_indices,
+            'removal_strategy': removal_strategy,
+            'duplicate_details': duplicate_details,
+            'processing_summary': processing_summary
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Advanced duplicate processing failed: {str(e)}")
+        return {
+            'error': f"Advanced duplicate processing failed: {str(e)}",
+            'kept_indices': list(range(len(df))),
+            'removal_strategy': 'Error - no duplicates removed',
+            'duplicate_details': [],
+            'processing_summary': processing_summary
+        }
+
+
+def select_best_citation_advanced(group, duplicate_details):
+    """Select the best citation from a group of exact duplicates using multiple criteria"""
+    
+    if len(group) == 1:
+        return group.iloc[0]
+    
+    # Strategy 1: Prioritize labeled citations (those with relevance feedback)
+    labeled_citations = group[group['is_relevant'].notna()]
+    if len(labeled_citations) > 0:
+        # Among labeled citations, prefer relevant ones
+        relevant_citations = labeled_citations[labeled_citations['is_relevant'] == True]
+        if len(relevant_citations) > 0:
+            best = relevant_citations.iloc[0]
+        else:
+            best = labeled_citations.iloc[0]
+        
+        # Log the selection reason
+        for _, other in group.iterrows():
+            if other['index'] != best['index']:
+                duplicate_details.append({
+                    'kept': f"{best['title'][:50]}...",
+                    'removed': f"{other['title'][:50]}...",
+                    'reason': f'Prioritized labeled citation (relevance: {best["is_relevant"]})'
+                })
+        return best
+    
+    # Strategy 2: Use completeness score (abstract length, title quality)
+    group_copy = group.copy()
+    group_copy['completeness_score'] = group_copy.apply(calculate_advanced_completeness_score, axis=1)
+    best = group_copy.loc[group_copy['completeness_score'].idxmax()]
+    
+    # Log the selection reason
+    for _, other in group.iterrows():
+        if other['index'] != best['index']:
+            duplicate_details.append({
+                'kept': f"{best['title'][:50]}...",
+                'removed': f"{other['title'][:50]}...",
+                'reason': f'Higher completeness score ({best["completeness_score"]:.2f})'
+            })
+    
+    return best
+
+
+def calculate_advanced_completeness_score(row):
+    """Calculate a comprehensive completeness score for citation quality"""
+    score = 0
+    
+    # Title quality (10-40 points)
+    title_len = len(str(row['title'])) if pd.notna(row['title']) else 0
+    if title_len > 100:
+        score += 40
+    elif title_len > 50:
+        score += 30
+    elif title_len > 20:
+        score += 20
+    else:
+        score += 10
+    
+    # Abstract quality (20-50 points)
+    abstract_len = len(str(row['abstract'])) if pd.notna(row['abstract']) else 0
+    if abstract_len > 1000:
+        score += 50
+    elif abstract_len > 500:
+        score += 40
+    elif abstract_len > 200:
+        score += 30
+    elif abstract_len > 50:
+        score += 20
+    else:
+        score += 10
+    
+    # Bonus for being labeled (10 points)
+    if pd.notna(row['is_relevant']):
+        score += 10
+    
+    return score
+
+
+def calculate_tfidf_similarity(df, duplicate_details):
+    """Calculate TF-IDF similarity and remove similar citations"""
+    
+    try:
+        # Prepare text for TF-IDF analysis
+        texts = []
+        for _, row in df.iterrows():
+            text = f"{normalize_text(row['title'])} {normalize_text(row['abstract'])}"
+            texts.append(text)
+        
+        if len(texts) < 2:
+            return {'success': True, 'kept_indices': df['index'].tolist(), 'comparisons_made': 0}
+        
+        # Calculate TF-IDF vectors
+        vectorizer = TfidfVectorizer(
+            max_features=1000, 
+            stop_words='english', 
+            ngram_range=(1, 2),
+            min_df=1,
+            max_df=0.95
+        )
+        
+        tfidf_matrix = vectorizer.fit_transform(texts)
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Find similar pairs using higher threshold (75% similarity)
+        similarity_threshold = 0.75
+        to_remove = set()
+        comparisons_made = 0
+        
+        for i in range(len(similarity_matrix)):
+            for j in range(i + 1, len(similarity_matrix)):
+                comparisons_made += 1
+                similarity_score = similarity_matrix[i][j]
+                
+                if similarity_score > similarity_threshold:
+                    row_i = df.iloc[i]
+                    row_j = df.iloc[j]
+                    
+                    # Decide which one to keep based on multiple criteria
+                    keep_i = should_keep_citation_i(row_i, row_j)
+                    
+                    if keep_i:
+                        to_remove.add(j)
+                        duplicate_details.append({
+                            'kept': f"{row_i['title'][:50]}...",
+                            'removed': f"{row_j['title'][:50]}...",
+                            'reason': f'TF-IDF similarity: {similarity_score:.3f} (threshold: {similarity_threshold})'
+                        })
+                    else:
+                        to_remove.add(i)
+                        duplicate_details.append({
+                            'kept': f"{row_j['title'][:50]}...",
+                            'removed': f"{row_i['title'][:50]}...",
+                            'reason': f'TF-IDF similarity: {similarity_score:.3f} (threshold: {similarity_threshold})'
+                        })
+        
+        # Return indices of citations to keep
+        kept_indices = [df.iloc[i]['index'] for i in range(len(df)) if i not in to_remove]
+        
+        return {
+            'success': True,
+            'kept_indices': kept_indices,
+            'comparisons_made': comparisons_made
+        }
+        
+    except Exception as e:
+        app.logger.warning(f"TF-IDF similarity calculation failed: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
+            'kept_indices': df['index'].tolist(),
+            'comparisons_made': 0
+        }
+
+
+def should_keep_citation_i(citation_i, citation_j):
+    """Decide which citation to keep when they are similar"""
+    
+    # Priority 1: Keep labeled citations
+    i_labeled = pd.notna(citation_i['is_relevant'])
+    j_labeled = pd.notna(citation_j['is_relevant'])
+    
+    if i_labeled and not j_labeled:
+        return True
+    elif j_labeled and not i_labeled:
+        return False
+    elif i_labeled and j_labeled:
+        # Both labeled - prefer relevant ones
+        if citation_i['is_relevant'] == True and citation_j['is_relevant'] != True:
+            return True
+        elif citation_j['is_relevant'] == True and citation_i['is_relevant'] != True:
+            return False
+    
+    # Priority 2: Compare completeness scores
+    score_i = calculate_advanced_completeness_score(citation_i)
+    score_j = calculate_advanced_completeness_score(citation_j)
+    
+    return score_i >= score_j
 
 
 # At the end of your main.py file:
