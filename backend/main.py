@@ -474,27 +474,31 @@ def add_citations(project_id):
                         "found_columns": list(df.columns)
                     }), 400
 
-                # Process duplicates and create citations
-                result = process_duplicates_and_create_citations(df, project_id, project.current_iteration)
-                
-                if result['error']:
-                    return jsonify({"error": result['error']}), 400
+                # Create citations without duplicate processing
+                if 'title' not in df.columns or 'abstract' not in df.columns:
+                    return jsonify({
+                        "error": "File must contain 'title' and 'abstract' columns",
+                        "found_columns": list(df.columns)
+                    }), 400
 
-                db.session.bulk_save_objects(result['citations'])
+                new_citations = []
+                for _, row in df.iterrows():
+                    citation = Citation(
+                        title=str(row['title']),
+                        abstract=str(row['abstract']),
+                        project_id=project_id,
+                        iteration=project.current_iteration
+                    )
+                    new_citations.append(citation)
+
+                db.session.bulk_save_objects(new_citations)
                 db.session.commit()
                 
-                response_data = {
-                    "message": f"Added {len(result['citations'])} citations"
-                }
-                
-                if result['duplicates_removed'] > 0:
-                    response_data["duplicates_info"] = {
-                        "duplicates_removed": result['duplicates_removed'],
-                        "removal_strategy": result['removal_strategy'],
-                        "details": result['duplicate_details']
-                    }
-                
-                return jsonify(response_data), 201
+                return jsonify({
+                    "message": f"Added {len(new_citations)} citations",
+                    "total_citations": len(new_citations),
+                    "note": "Use 'Detect and Remove Duplicates' button in keywords section to remove any duplicates"
+                }), 201
 
             except Exception as e:
                 db.session.rollback()
@@ -856,3 +860,84 @@ def get_labeled_citations(project_id):
             "iteration": c.iteration
         } for c in labeled]
     })
+
+
+@app.route('/api/projects/<int:project_id>/remove-duplicates', methods=['POST'])
+def remove_duplicates(project_id):
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        # Get all citations for this project
+        citations = Citation.query.filter_by(project_id=project_id).all()
+        
+        if not citations:
+            return jsonify({"error": "No citations found in this project"}), 404
+
+        app.logger.info(f"Starting duplicate removal for project {project_id} with {len(citations)} citations")
+
+        # Convert citations to DataFrame format for processing
+        citation_data = []
+        for citation in citations:
+            citation_data.append({
+                'id': citation.id,
+                'title': citation.title,
+                'abstract': citation.abstract,
+                'is_relevant': citation.is_relevant,
+                'iteration': citation.iteration
+            })
+
+        df = pd.DataFrame(citation_data)
+        
+        # Process duplicates using existing logic
+        result = process_duplicates_and_create_citations(df, project_id, project.current_iteration)
+        
+        if result['error']:
+            return jsonify({"error": result['error']}), 400
+
+        # If duplicates were found, update the database
+        if result['duplicates_removed'] > 0:
+            # Get IDs of citations to keep
+            citations_to_keep = [c.title for c in result['citations']]
+            
+            # Delete duplicate citations from database
+            # Keep the first occurrence of each unique citation
+            kept_citation_ids = []
+            for citation in citations:
+                citation_key = f"{citation.title.lower().strip()} {citation.abstract.lower().strip()}"
+                
+                # Check if this citation should be kept
+                should_keep = False
+                for kept_citation in result['citations']:
+                    kept_key = f"{kept_citation['title'].lower().strip()} {kept_citation['abstract'].lower().strip()}"
+                    if citation_key == kept_key and citation.id not in kept_citation_ids:
+                        kept_citation_ids.append(citation.id)
+                        should_keep = True
+                        break
+                
+                if not should_keep:
+                    db.session.delete(citation)
+            
+            db.session.commit()
+            app.logger.info(f"Removed {result['duplicates_removed']} duplicate citations from project {project_id}")
+
+        return jsonify({
+            "message": f"Duplicate removal completed",
+            "duplicates_removed": result['duplicates_removed'],
+            "remaining_citations": len(result['citations']),
+            "removal_strategy": result['removal_strategy'],
+            "duplicate_details": result['duplicate_details'][:5]  # Show first 5 examples
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error removing duplicates: {str(e)}")
+        db.session.rollback()
+        return jsonify({
+            "error": "Failed to remove duplicates",
+            "details": str(e)
+        }), 500
