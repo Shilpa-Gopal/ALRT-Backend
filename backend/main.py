@@ -796,11 +796,6 @@ def predict_citations(project_id):
     return jsonify({"predictions": predictions})
 
 
-# At the end of your main.py file:
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
-
-
 @app.route('/api/projects/<int:project_id>/iterations', methods=['GET'])
 def get_iteration_info(project_id):
     user_id = request.headers.get('X-User-Id')
@@ -928,3 +923,8 @@ def remove_duplicates(project_id):
             "error": "Failed to remove duplicates",
             "details": str(e)
         }), 500
+
+
+# At the end of your main.py file:
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5000)
