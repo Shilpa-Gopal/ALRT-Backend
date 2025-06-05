@@ -6,19 +6,33 @@ import io
 import xlsxwriter
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import create_app, db
 from app.models import User, Project, Citation
 from app.ml_system import LiteratureReviewSystem
-from difflib import SequenceMatcher
+import hashlib
+import re
 
 app = create_app()
 
-def calculate_similarity(text1, text2):
-    """Calculate similarity ratio between two text strings"""
-    if pd.isna(text1) or pd.isna(text2):
-        return 0.0
-    return SequenceMatcher(None, str(text1).lower(), str(text2).lower()).ratio()
+def normalize_text(text):
+    """Normalize text for better matching"""
+    if pd.isna(text):
+        return ""
+    text = str(text).lower()
+    # Remove extra spaces, punctuation, and normalize
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def create_text_hash(title, abstract, authors=None):
+    """Create a hash for quick duplicate detection"""
+    combined = f"{normalize_text(title)} {normalize_text(abstract)}"
+    if authors:
+        combined += f" {normalize_text(authors)}"
+    return hashlib.md5(combined.encode()).hexdigest()
 
 def find_year_column(df):
     """Find year-related column in dataframe (case insensitive)"""
@@ -37,8 +51,6 @@ def extract_year_from_value(value):
         return None
     
     value_str = str(value)
-    # Try to extract 4-digit year
-    import re
     year_match = re.search(r'\b(19|20)\d{2}\b', value_str)
     if year_match:
         return int(year_match.group())
@@ -56,18 +68,20 @@ def calculate_completeness_score(row):
     # Additional score for abstract length
     if pd.notna(row.get('abstract')):
         abstract_len = len(str(row['abstract']))
-        score += min(abstract_len / 10, 50)  # Up to 50 points for abstract length
+        score += min(abstract_len / 10, 50)
     
     return score
 
 def process_duplicates_and_create_citations(df, project_id, current_iteration):
-    """Process duplicates using multiple strategies and create Citation objects"""
+    """Optimized duplicate processing using vectorization and hashing"""
     
-    # Normalize column names to lowercase for case-insensitive matching
+    app.logger.info(f"Processing {len(df)} citations for duplicates")
+    
+    # Normalize column names
     df_normalized = df.copy()
     df_normalized.columns = df_normalized.columns.str.lower()
     
-    # Check required columns (case insensitive)
+    # Check required columns
     if 'title' not in df_normalized.columns or 'abstract' not in df_normalized.columns:
         return {
             'error': f"File must contain 'title' and 'abstract' columns. Found: {list(df.columns)}",
@@ -77,135 +91,48 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
             'duplicate_details': []
         }
     
-    # Find year column
+    # Find optional columns
     year_col = find_year_column(df)
-    has_year_data = year_col is not None
-    
-    # Find authors column (optional)
     authors_col = None
     for col in df.columns:
         if 'author' in col.lower():
             authors_col = col
             break
     
-    duplicates = []
-    duplicate_groups = []
-    citations_to_keep = []
-    removal_strategy = ""
+    # Step 1: Quick hash-based duplicate detection for exact matches
+    df['text_hash'] = df.apply(lambda row: create_text_hash(
+        row['title'], 
+        row['abstract'], 
+        row.get(authors_col) if authors_col else None
+    ), axis=1)
     
-    # Group potential duplicates
-    for i in range(len(df)):
-        current_row = df.iloc[i]
-        is_duplicate = False
-        
-        for j, existing_row in enumerate(citations_to_keep):
-            # Calculate similarity for title and abstract
-            title_sim = calculate_similarity(current_row['title'], existing_row['title'])
-            abstract_sim = calculate_similarity(current_row['abstract'], existing_row['abstract'])
+    # Step 2: Group by hash to find exact duplicates
+    hash_groups = df.groupby('text_hash')
+    
+    # Step 3: For groups with multiple items, apply selection strategy
+    final_citations = []
+    duplicate_details = []
+    removal_strategy = "Hash-based with TF-IDF similarity fallback"
+    
+    for hash_val, group in hash_groups:
+        if len(group) == 1:
+            # No duplicates
+            final_citations.append(group.iloc[0])
+        else:
+            # Handle duplicates within this group
+            app.logger.info(f"Found {len(group)} potential duplicates")
             
-            # Calculate author similarity if available
-            author_sim = 1.0  # Default if no authors
-            if authors_col and pd.notna(current_row.get(authors_col)) and pd.notna(existing_row.get(authors_col)):
-                author_sim = calculate_similarity(current_row[authors_col], existing_row[authors_col])
-            
-            # Check if it's a duplicate (70% threshold)
-            if title_sim >= 0.7 and abstract_sim >= 0.7 and author_sim >= 0.7:
-                is_duplicate = True
-                
-                # Determine which one to keep based on strategy
-                if has_year_data:
-                    # Strategy 1: Keep latest by year
-                    current_year = extract_year_from_value(current_row.get(year_col))
-                    existing_year = extract_year_from_value(existing_row.get(year_col))
-                    
-                    if current_year and existing_year:
-                        if current_year > existing_year:
-                            # Replace existing with current
-                            duplicate_groups.append({
-                                'kept': f"{current_row['title'][:50]}...",
-                                'removed': f"{existing_row['title'][:50]}...",
-                                'reason': f'Newer publication year ({current_year} vs {existing_year})'
-                            })
-                            citations_to_keep[j] = current_row
-                        else:
-                            # Keep existing, mark current as duplicate
-                            duplicate_groups.append({
-                                'kept': f"{existing_row['title'][:50]}...",
-                                'removed': f"{current_row['title'][:50]}...",
-                                'reason': f'Older publication year ({current_year} vs {existing_year})'
-                            })
-                    elif current_year and not existing_year:
-                        # Current has year, existing doesn't - keep current
-                        duplicate_groups.append({
-                            'kept': f"{current_row['title'][:50]}...",
-                            'removed': f"{existing_row['title'][:50]}...",
-                            'reason': 'Has publication year data'
-                        })
-                        citations_to_keep[j] = current_row
-                    elif not current_year and existing_year:
-                        # Existing has year, current doesn't - keep existing
-                        duplicate_groups.append({
-                            'kept': f"{existing_row['title'][:50]}...",
-                            'removed': f"{current_row['title'][:50]}...",
-                            'reason': 'Missing publication year data'
-                        })
-                    else:
-                        # Neither has year data, fall back to completeness
-                        current_score = calculate_completeness_score(current_row)
-                        existing_score = calculate_completeness_score(existing_row)
-                        
-                        if current_score > existing_score:
-                            duplicate_groups.append({
-                                'kept': f"{current_row['title'][:50]}...",
-                                'removed': f"{existing_row['title'][:50]}...",
-                                'reason': f'More complete record (score: {current_score:.1f} vs {existing_score:.1f})'
-                            })
-                            citations_to_keep[j] = current_row
-                        else:
-                            duplicate_groups.append({
-                                'kept': f"{existing_row['title'][:50]}...",
-                                'removed': f"{current_row['title'][:50]}...",
-                                'reason': f'Less complete record (score: {current_score:.1f} vs {existing_score:.1f})'
-                            })
-                    
-                    removal_strategy = "Year-based prioritization with completeness fallback"
-                else:
-                    # Strategy 2: No year data - use completeness or upload order
-                    current_score = calculate_completeness_score(current_row)
-                    existing_score = calculate_completeness_score(existing_row)
-                    
-                    if abs(current_score - existing_score) > 5:  # Significant difference
-                        if current_score > existing_score:
-                            duplicate_groups.append({
-                                'kept': f"{current_row['title'][:50]}...",
-                                'removed': f"{existing_row['title'][:50]}...",
-                                'reason': f'More complete record (score: {current_score:.1f} vs {existing_score:.1f})'
-                            })
-                            citations_to_keep[j] = current_row
-                        else:
-                            duplicate_groups.append({
-                                'kept': f"{existing_row['title'][:50]}...",
-                                'removed': f"{current_row['title'][:50]}...",
-                                'reason': f'Less complete record (score: {current_score:.1f} vs {existing_score:.1f})'
-                            })
-                    else:
-                        # Similar completeness - keep first occurrence (upload order)
-                        duplicate_groups.append({
-                            'kept': f"{existing_row['title'][:50]}...",
-                            'removed': f"{current_row['title'][:50]}...",
-                            'reason': 'Upload order priority (similar completeness)'
-                        })
-                    
-                    removal_strategy = "Completeness-based with upload order fallback"
-                
-                break
-        
-        if not is_duplicate:
-            citations_to_keep.append(current_row)
+            # Select best citation from this group
+            best_citation = select_best_citation(group, year_col, duplicate_details)
+            final_citations.append(best_citation)
+    
+    # Step 4: For remaining potential near-duplicates, use TF-IDF
+    if len(final_citations) > 1:
+        final_citations = remove_similar_citations(final_citations, authors_col, duplicate_details)
     
     # Create Citation objects
     new_citations = []
-    for row in citations_to_keep:
+    for _, row in enumerate(final_citations):
         citation = Citation(
             title=str(row['title']),
             abstract=str(row['abstract']),
@@ -214,13 +141,109 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
         )
         new_citations.append(citation)
     
+    duplicates_removed = len(df) - len(new_citations)
+    app.logger.info(f"Removed {duplicates_removed} duplicates, keeping {len(new_citations)} citations")
+    
     return {
         'error': None,
         'citations': new_citations,
-        'duplicates_removed': len(duplicate_groups),
+        'duplicates_removed': duplicates_removed,
         'removal_strategy': removal_strategy,
-        'duplicate_details': duplicate_groups[:10]  # Limit to first 10 for response size
+        'duplicate_details': duplicate_details[:10]
     }
+
+def select_best_citation(group, year_col, duplicate_details):
+    """Select the best citation from a group of duplicates"""
+    if len(group) == 1:
+        return group.iloc[0]
+    
+    # Strategy 1: Use year if available
+    if year_col:
+        group['year_extracted'] = group[year_col].apply(extract_year_from_value)
+        valid_years = group[group['year_extracted'].notna()]
+        
+        if len(valid_years) > 0:
+            # Keep the most recent
+            best = valid_years.loc[valid_years['year_extracted'].idxmax()]
+            
+            # Log the duplicate removal
+            for _, other in group.iterrows():
+                if other.name != best.name:
+                    duplicate_details.append({
+                        'kept': f"{best['title'][:50]}...",
+                        'removed': f"{other['title'][:50]}...",
+                        'reason': f'Year-based selection'
+                    })
+            
+            return best
+    
+    # Strategy 2: Use completeness score
+    group['completeness'] = group.apply(calculate_completeness_score, axis=1)
+    best = group.loc[group['completeness'].idxmax()]
+    
+    # Log the duplicate removal
+    for _, other in group.iterrows():
+        if other.name != best.name:
+            duplicate_details.append({
+                'kept': f"{best['title'][:50]}...",
+                'removed': f"{other['title'][:50]}...",
+                'reason': f'Completeness-based selection'
+            })
+    
+    return best
+
+def remove_similar_citations(citations_list, authors_col, duplicate_details):
+    """Use TF-IDF to find and remove similar citations"""
+    if len(citations_list) < 2:
+        return citations_list
+    
+    # Prepare text for TF-IDF
+    texts = []
+    for citation in citations_list:
+        text = f"{normalize_text(citation['title'])} {normalize_text(citation['abstract'])}"
+        if authors_col and pd.notna(citation.get(authors_col)):
+            text += f" {normalize_text(citation[authors_col])}"
+        texts.append(text)
+    
+    # Calculate TF-IDF similarity only if we have enough text variation
+    try:
+        vectorizer = TfidfVectorizer(max_features=500, stop_words='english', ngram_range=(1, 2))
+        tfidf_matrix = vectorizer.fit_transform(texts)
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Find similar pairs (above 70% similarity)
+        to_remove = set()
+        for i in range(len(similarity_matrix)):
+            for j in range(i + 1, len(similarity_matrix)):
+                if similarity_matrix[i][j] > 0.7:
+                    # Keep the one with higher completeness
+                    citation_i = citations_list[i]
+                    citation_j = citations_list[j]
+                    
+                    score_i = calculate_completeness_score(citation_i)
+                    score_j = calculate_completeness_score(citation_j)
+                    
+                    if score_i >= score_j:
+                        to_remove.add(j)
+                        duplicate_details.append({
+                            'kept': f"{citation_i['title'][:50]}...",
+                            'removed': f"{citation_j['title'][:50]}...",
+                            'reason': f'TF-IDF similarity: {similarity_matrix[i][j]:.2f}'
+                        })
+                    else:
+                        to_remove.add(i)
+                        duplicate_details.append({
+                            'kept': f"{citation_j['title'][:50]}...",
+                            'removed': f"{citation_i['title'][:50]}...",
+                            'reason': f'TF-IDF similarity: {similarity_matrix[i][j]:.2f}'
+                        })
+        
+        # Return citations not in removal set
+        return [citation for i, citation in enumerate(citations_list) if i not in to_remove]
+        
+    except Exception as e:
+        app.logger.warning(f"TF-IDF similarity calculation failed: {e}")
+        return citations_list
 CORS(app, resources={r"/api/*": {
     "origins": "*",
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -424,6 +447,13 @@ def add_citations(project_id):
                         return jsonify({
                             "error": "Unsupported file format",
                             "details": f"File {file.filename} is not supported. Only .csv and .xlsx files are allowed"
+                        }), 400
+                    
+                    # Check file size limits for performance
+                    if len(df) > 10000:
+                        return jsonify({
+                            "error": "File too large",
+                            "details": f"File contains {len(df)} rows. Maximum supported is 10,000 rows for optimal performance."
                         }), 400
                     
                     # Clean up temp file
