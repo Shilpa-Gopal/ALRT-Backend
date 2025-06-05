@@ -10,8 +10,217 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from app import create_app, db
 from app.models import User, Project, Citation
 from app.ml_system import LiteratureReviewSystem
+from difflib import SequenceMatcher
 
 app = create_app()
+
+def calculate_similarity(text1, text2):
+    """Calculate similarity ratio between two text strings"""
+    if pd.isna(text1) or pd.isna(text2):
+        return 0.0
+    return SequenceMatcher(None, str(text1).lower(), str(text2).lower()).ratio()
+
+def find_year_column(df):
+    """Find year-related column in dataframe (case insensitive)"""
+    year_patterns = ['year', 'publication_year', 'pub_year', 'published_year', 
+                    'publication_date', 'pub_date', 'date', 'published']
+    
+    for col in df.columns:
+        for pattern in year_patterns:
+            if pattern.lower() in col.lower():
+                return col
+    return None
+
+def extract_year_from_value(value):
+    """Extract year from various date formats"""
+    if pd.isna(value):
+        return None
+    
+    value_str = str(value)
+    # Try to extract 4-digit year
+    import re
+    year_match = re.search(r'\b(19|20)\d{2}\b', value_str)
+    if year_match:
+        return int(year_match.group())
+    return None
+
+def calculate_completeness_score(row):
+    """Calculate completeness score based on filled fields and content length"""
+    score = 0
+    total_fields = len(row)
+    filled_fields = sum(1 for val in row if pd.notna(val) and str(val).strip())
+    
+    # Base score from field completion
+    score += (filled_fields / total_fields) * 50
+    
+    # Additional score for abstract length
+    if pd.notna(row.get('abstract')):
+        abstract_len = len(str(row['abstract']))
+        score += min(abstract_len / 10, 50)  # Up to 50 points for abstract length
+    
+    return score
+
+def process_duplicates_and_create_citations(df, project_id, current_iteration):
+    """Process duplicates using multiple strategies and create Citation objects"""
+    
+    # Normalize column names to lowercase for case-insensitive matching
+    df_normalized = df.copy()
+    df_normalized.columns = df_normalized.columns.str.lower()
+    
+    # Check required columns (case insensitive)
+    if 'title' not in df_normalized.columns or 'abstract' not in df_normalized.columns:
+        return {
+            'error': f"File must contain 'title' and 'abstract' columns. Found: {list(df.columns)}",
+            'citations': [],
+            'duplicates_removed': 0,
+            'removal_strategy': '',
+            'duplicate_details': []
+        }
+    
+    # Find year column
+    year_col = find_year_column(df)
+    has_year_data = year_col is not None
+    
+    # Find authors column (optional)
+    authors_col = None
+    for col in df.columns:
+        if 'author' in col.lower():
+            authors_col = col
+            break
+    
+    duplicates = []
+    duplicate_groups = []
+    citations_to_keep = []
+    removal_strategy = ""
+    
+    # Group potential duplicates
+    for i in range(len(df)):
+        current_row = df.iloc[i]
+        is_duplicate = False
+        
+        for j, existing_row in enumerate(citations_to_keep):
+            # Calculate similarity for title and abstract
+            title_sim = calculate_similarity(current_row['title'], existing_row['title'])
+            abstract_sim = calculate_similarity(current_row['abstract'], existing_row['abstract'])
+            
+            # Calculate author similarity if available
+            author_sim = 1.0  # Default if no authors
+            if authors_col and pd.notna(current_row.get(authors_col)) and pd.notna(existing_row.get(authors_col)):
+                author_sim = calculate_similarity(current_row[authors_col], existing_row[authors_col])
+            
+            # Check if it's a duplicate (70% threshold)
+            if title_sim >= 0.7 and abstract_sim >= 0.7 and author_sim >= 0.7:
+                is_duplicate = True
+                
+                # Determine which one to keep based on strategy
+                if has_year_data:
+                    # Strategy 1: Keep latest by year
+                    current_year = extract_year_from_value(current_row.get(year_col))
+                    existing_year = extract_year_from_value(existing_row.get(year_col))
+                    
+                    if current_year and existing_year:
+                        if current_year > existing_year:
+                            # Replace existing with current
+                            duplicate_groups.append({
+                                'kept': f"{current_row['title'][:50]}...",
+                                'removed': f"{existing_row['title'][:50]}...",
+                                'reason': f'Newer publication year ({current_year} vs {existing_year})'
+                            })
+                            citations_to_keep[j] = current_row
+                        else:
+                            # Keep existing, mark current as duplicate
+                            duplicate_groups.append({
+                                'kept': f"{existing_row['title'][:50]}...",
+                                'removed': f"{current_row['title'][:50]}...",
+                                'reason': f'Older publication year ({current_year} vs {existing_year})'
+                            })
+                    elif current_year and not existing_year:
+                        # Current has year, existing doesn't - keep current
+                        duplicate_groups.append({
+                            'kept': f"{current_row['title'][:50]}...",
+                            'removed': f"{existing_row['title'][:50]}...",
+                            'reason': 'Has publication year data'
+                        })
+                        citations_to_keep[j] = current_row
+                    elif not current_year and existing_year:
+                        # Existing has year, current doesn't - keep existing
+                        duplicate_groups.append({
+                            'kept': f"{existing_row['title'][:50]}...",
+                            'removed': f"{current_row['title'][:50]}...",
+                            'reason': 'Missing publication year data'
+                        })
+                    else:
+                        # Neither has year data, fall back to completeness
+                        current_score = calculate_completeness_score(current_row)
+                        existing_score = calculate_completeness_score(existing_row)
+                        
+                        if current_score > existing_score:
+                            duplicate_groups.append({
+                                'kept': f"{current_row['title'][:50]}...",
+                                'removed': f"{existing_row['title'][:50]}...",
+                                'reason': f'More complete record (score: {current_score:.1f} vs {existing_score:.1f})'
+                            })
+                            citations_to_keep[j] = current_row
+                        else:
+                            duplicate_groups.append({
+                                'kept': f"{existing_row['title'][:50]}...",
+                                'removed': f"{current_row['title'][:50]}...",
+                                'reason': f'Less complete record (score: {current_score:.1f} vs {existing_score:.1f})'
+                            })
+                    
+                    removal_strategy = "Year-based prioritization with completeness fallback"
+                else:
+                    # Strategy 2: No year data - use completeness or upload order
+                    current_score = calculate_completeness_score(current_row)
+                    existing_score = calculate_completeness_score(existing_row)
+                    
+                    if abs(current_score - existing_score) > 5:  # Significant difference
+                        if current_score > existing_score:
+                            duplicate_groups.append({
+                                'kept': f"{current_row['title'][:50]}...",
+                                'removed': f"{existing_row['title'][:50]}...",
+                                'reason': f'More complete record (score: {current_score:.1f} vs {existing_score:.1f})'
+                            })
+                            citations_to_keep[j] = current_row
+                        else:
+                            duplicate_groups.append({
+                                'kept': f"{existing_row['title'][:50]}...",
+                                'removed': f"{current_row['title'][:50]}...",
+                                'reason': f'Less complete record (score: {current_score:.1f} vs {existing_score:.1f})'
+                            })
+                    else:
+                        # Similar completeness - keep first occurrence (upload order)
+                        duplicate_groups.append({
+                            'kept': f"{existing_row['title'][:50]}...",
+                            'removed': f"{current_row['title'][:50]}...",
+                            'reason': 'Upload order priority (similar completeness)'
+                        })
+                    
+                    removal_strategy = "Completeness-based with upload order fallback"
+                
+                break
+        
+        if not is_duplicate:
+            citations_to_keep.append(current_row)
+    
+    # Create Citation objects
+    new_citations = []
+    for row in citations_to_keep:
+        citation = Citation(
+            title=str(row['title']),
+            abstract=str(row['abstract']),
+            project_id=project_id,
+            iteration=current_iteration
+        )
+        new_citations.append(citation)
+    
+    return {
+        'error': None,
+        'citations': new_citations,
+        'duplicates_removed': len(duplicate_groups),
+        'removal_strategy': removal_strategy,
+        'duplicate_details': duplicate_groups[:10]  # Limit to first 10 for response size
+    }
 CORS(app, resources={r"/api/*": {
     "origins": "*",
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -235,21 +444,27 @@ def add_citations(project_id):
                         "found_columns": list(df.columns)
                     }), 400
 
-                new_citations = []
-                for _, row in df.iterrows():
-                    citation = Citation(title=str(row['title']),
-                                     abstract=str(row['abstract']),
-                                     project_id=project_id,
-                                     iteration=project.current_iteration)
-                    new_citations.append(citation)
+                # Process duplicates and create citations
+                result = process_duplicates_and_create_citations(df, project_id, project.current_iteration)
+                
+                if result['error']:
+                    return jsonify({"error": result['error']}), 400
 
-                if not new_citations:
-                    return jsonify({"error": "No valid citations found in file"}), 400
-
-                db.session.bulk_save_objects(new_citations)
+                db.session.bulk_save_objects(result['citations'])
                 db.session.commit()
                 
-                return jsonify({"message": f"Added {len(new_citations)} citations"}), 201
+                response_data = {
+                    "message": f"Added {len(result['citations'])} citations"
+                }
+                
+                if result['duplicates_removed'] > 0:
+                    response_data["duplicates_info"] = {
+                        "duplicates_removed": result['duplicates_removed'],
+                        "removal_strategy": result['removal_strategy'],
+                        "details": result['duplicate_details']
+                    }
+                
+                return jsonify(response_data), 201
 
             except Exception as e:
                 db.session.rollback()
