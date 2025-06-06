@@ -256,16 +256,21 @@ with app.app_context():
     
     # Migration: Add is_admin column to existing users if it doesn't exist
     try:
-        # Check if is_admin column exists, if not add it
+        # Check if is_admin column exists using PostgreSQL system tables
         from sqlalchemy import text
-        result = db.session.execute(text("PRAGMA table_info(user)")).fetchall()
-        columns = [row[1] for row in result]
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'user' AND column_name = 'is_admin'
+        """)).fetchall()
         
-        if 'is_admin' not in columns:
+        if not result:
             app.logger.info("Adding is_admin column to user table")
-            db.session.execute(text("ALTER TABLE user ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+            db.session.execute(text("ALTER TABLE \"user\" ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
             db.session.commit()
             app.logger.info("Migration completed: is_admin column added")
+        else:
+            app.logger.info("is_admin column already exists")
     except Exception as e:
         app.logger.error(f"Migration error: {str(e)}")
         db.session.rollback()
