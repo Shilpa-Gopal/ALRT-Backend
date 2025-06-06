@@ -281,6 +281,36 @@ def home():
     return 'Backend API is running', 200
 
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    try:
+        # Test database connection
+        db.session.execute('SELECT 1')
+        return jsonify({
+            "status": "healthy",
+            "database": "connected",
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }), 503
+
+
+@app.route('/api', methods=['GET'])
+def api_info():
+    """API information endpoint"""
+    return jsonify({
+        "name": "Literature Review API",
+        "version": "1.0",
+        "status": "running"
+    }), 200
+
+
 @app.route('/api/auth/signup', methods=['POST'])
 def signup():
     data = request.get_json()
@@ -1459,6 +1489,50 @@ def get_iteration_info(project_id):
         "max_iterations": 10,
         "metrics": project.model_metrics
     })
+
+
+@app.route('/api/projects/<int:project_id>', methods=['GET'])
+def get_project_details(project_id):
+    """Get project details including citations"""
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user_id_int = int(user_id)
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        citations = Citation.query.filter_by(project_id=project_id).all()
+        labeled_count = Citation.query.filter(
+            Citation.project_id == project_id,
+            Citation.is_relevant.isnot(None)
+        ).count()
+
+        return jsonify({
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+                "current_iteration": project.current_iteration,
+                "keywords": project.keywords,
+                "model_metrics": project.model_metrics,
+                "citations_count": len(citations),
+                "labeled_count": labeled_count
+            },
+            "citations": [{
+                "id": c.id,
+                "title": c.title,
+                "abstract": c.abstract,
+                "is_relevant": c.is_relevant,
+                "iteration": c.iteration
+            } for c in citations]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error fetching project details: {str(e)}")
+        return jsonify({"error": "Failed to fetch project details"}), 500
 
 
 @app.route('/api/projects/<int:project_id>', methods=['DELETE'])
