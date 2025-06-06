@@ -1301,69 +1301,106 @@ def update_citation(project_id, citation_id):
 
 @app.route('/api/projects/<int:project_id>/train', methods=['POST'])
 def train_model(project_id):
-    user_id = request.headers.get('X-User-Id')
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    user_id_int = int(user_id)
-    user = User.query.get(user_id_int)
-    if not user:
-        return jsonify({"error": "User not found"}), 401
-        
-    # Allow admin access to any project, regular users only their own
-    if user.is_admin:
-        project = Project.query.get(project_id)
-    else:
-        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
 
-    # Process citations based on exclude keywords
-    citations = Citation.query.filter_by(project_id=project_id).all()
-    excluded_citations = []
-    exclude_reasons = {}
+        # Check if we have enough labeled citations (at least 10 total)
+        labeled_citations = Citation.query.filter(
+            Citation.project_id == project_id,
+            Citation.is_relevant.isnot(None)
+        ).all()
 
-    for citation in citations:
-        text = f"{citation.title} {citation.abstract}".lower()
-        for exclude_kw in project.keywords.get('exclude', []):
-            word = exclude_kw['word'].lower()
-            frequency = exclude_kw.get('frequency', 1)
-            occurrences = text.count(word)
+        if len(labeled_citations) < 10:
+            return jsonify({
+                "error": f"Need at least 10 labeled citations to train. Currently have {len(labeled_citations)} labeled citations."
+            }), 400
 
-            if occurrences >= frequency:
-                excluded_citations.append(citation.id)
-                if word not in exclude_reasons:
-                    exclude_reasons[word] = {'frequency': frequency, 'count': 0}
-                exclude_reasons[word]['count'] += 1
-                break
+        # Count relevant and irrelevant citations
+        relevant_count = sum(1 for c in labeled_citations if c.is_relevant == True)
+        irrelevant_count = sum(1 for c in labeled_citations if c.is_relevant == False)
 
-    # Filter out excluded citations
-    Citation.query.filter(Citation.id.in_(excluded_citations)).update(
-        {Citation.is_relevant: False}, synchronize_session=False
-    )
-    db.session.commit()
+        if relevant_count < 5 or irrelevant_count < 5:
+            return jsonify({
+                "error": f"Need at least 5 relevant and 5 irrelevant citations. Currently have {relevant_count} relevant and {irrelevant_count} irrelevant."
+            }), 400
 
-    review_system = LiteratureReviewSystem(project_id)
-    result = review_system.train_iteration(project.current_iteration)
+        app.logger.info(f"Training model for project {project_id} with {len(labeled_citations)} labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant)")
 
-    if 'error' in result:
-        return jsonify(result), 400
+        # Process citations based on exclude keywords
+        citations = Citation.query.filter_by(project_id=project_id).all()
+        excluded_citations = []
+        exclude_reasons = {}
 
-    # Add exclusion metadata to result
-    result['excluded_citations'] = {
-        'total': len(excluded_citations),
-        'reasons': [
-            {'keyword': k, 'frequency': v['frequency'], 'citations_excluded': v['count']}
-            for k, v in exclude_reasons.items()
-        ]
-    }
+        for citation in citations:
+            text = f"{citation.title} {citation.abstract}".lower()
+            for exclude_kw in project.keywords.get('exclude', []):
+                word = exclude_kw['word'].lower()
+                frequency = exclude_kw.get('frequency', 1)
+                occurrences = text.count(word)
 
-    project.model_metrics[str(project.current_iteration)] = result['metrics']
-    project.current_iteration += 1
-    db.session.commit()
+                if occurrences >= frequency:
+                    excluded_citations.append(citation.id)
+                    if word not in exclude_reasons:
+                        exclude_reasons[word] = {'frequency': frequency, 'count': 0}
+                    exclude_reasons[word]['count'] += 1
+                    break
 
-    return jsonify(result)
+        # Filter out excluded citations
+        if excluded_citations:
+            Citation.query.filter(Citation.id.in_(excluded_citations)).update(
+                {Citation.is_relevant: False}, synchronize_session=False
+            )
+            db.session.commit()
+
+        review_system = LiteratureReviewSystem(project_id)
+        result = review_system.train_iteration(project.current_iteration)
+
+        if 'error' in result:
+            app.logger.error(f"Training error for project {project_id}: {result['error']}")
+            return jsonify(result), 400
+
+        # Add exclusion metadata to result
+        result['excluded_citations'] = {
+            'total': len(excluded_citations),
+            'reasons': [
+                {'keyword': k, 'frequency': v['frequency'], 'citations_excluded': v['count']}
+                for k, v in exclude_reasons.items()
+            ]
+        }
+
+        # Store metrics and increment iteration
+        if str(project.current_iteration) not in project.model_metrics:
+            project.model_metrics[str(project.current_iteration)] = {}
+        project.model_metrics[str(project.current_iteration)] = result['metrics']
+        project.current_iteration += 1
+        db.session.commit()
+
+        app.logger.info(f"Successfully trained model for project {project_id}, moving to iteration {project.current_iteration}")
+        return jsonify(result)
+
+    except Exception as e:
+        app.logger.error(f"Training model error for project {project_id}: {str(e)}")
+        db.session.rollback()
+        return jsonify({
+            "error": "Failed to train model",
+            "details": str(e)
+        }), 500
 
 
 @app.route('/api/projects/<int:project_id>/keywords', methods=['GET'])

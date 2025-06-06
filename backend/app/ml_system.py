@@ -86,35 +86,45 @@ class LiteratureReviewSystem:
         return thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
 
     def train_iteration(self, iteration: int = 0):
-        data = self.get_project_data()
-        labeled_data = data[data['is_relevant'].notna()]
+        try:
+            data = self.get_project_data()
+            labeled_data = data[data['is_relevant'].notna()]
 
-        # Validate citation counts for current iteration
-        current_iter_data = labeled_data[labeled_data['iteration'] == iteration]
-        relevant_count = sum(current_iter_data['is_relevant'] == True)
-        irrelevant_count = sum(current_iter_data['is_relevant'] == False)
+            if len(labeled_data) < 10:
+                return {'error': 'Need at least 10 labeled citations to train the model'}
 
-        if relevant_count != 5 or irrelevant_count != 5:
-            return {'error': 'Each iteration requires exactly 5 relevant and 5 irrelevant citations'}
+            # Count relevant and irrelevant citations
+            relevant_count = sum(labeled_data['is_relevant'] == True)
+            irrelevant_count = sum(labeled_data['is_relevant'] == False)
 
-        if len(labeled_data) < 10:
-            return {'error': 'Not enough labeled data'}
+            if relevant_count < 5 or irrelevant_count < 5:
+                return {'error': f'Need at least 5 relevant and 5 irrelevant citations. Have {relevant_count} relevant and {irrelevant_count} irrelevant.'}
 
-        X = self.prepare_features(labeled_data)
-        y = labeled_data['is_relevant'].astype(int)
+            self.logger.info(f"Training with {len(labeled_data)} labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant)")
 
-        model = XGBClassifier(
-            max_depth=3,
-            learning_rate=0.1,
-            n_estimators=100,
-            random_state=42
-        )
+            X = self.prepare_features(labeled_data)
+            y = labeled_data['is_relevant'].astype(int)
 
-        model.fit(X, y)
-        y_pred = model.predict(X)
-        metrics = self.calculate_metrics(y, y_pred)
+            model = XGBClassifier(
+                max_depth=3,
+                learning_rate=0.1,
+                n_estimators=100,
+                random_state=42
+            )
 
-        return {
-            'metrics': metrics,
-            'samples_checked': len(y)
-        }
+            model.fit(X, y)
+            y_pred = model.predict(X)
+            metrics = self.calculate_metrics(y, y_pred)
+
+            self.logger.info(f"Training completed successfully. Metrics: {metrics}")
+
+            return {
+                'metrics': metrics,
+                'samples_checked': len(y),
+                'relevant_count': relevant_count,
+                'irrelevant_count': irrelevant_count
+            }
+
+        except Exception as e:
+            self.logger.error(f"Training iteration error: {str(e)}")
+            return {'error': f'Training failed: {str(e)}'}
