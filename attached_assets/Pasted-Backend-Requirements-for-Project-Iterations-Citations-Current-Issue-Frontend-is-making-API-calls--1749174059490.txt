@@ -1,0 +1,65 @@
+Backend Requirements for Project Iterations & Citations
+Current Issue:
+Frontend is making API calls to endpoints that don't exist in your Flask backend, causing 404 and 405 errors when users try to View/Edit projects.
+
+Missing Endpoints That Need Implementation:
+
+1. DELETE /api/projects/{id}
+Current Status: Returns 405 "Method Not Allowed"
+Required: Allow project deletion
+Headers: X-User-Id required
+Response: {"success": true, "message": "Project deleted successfully"}
+2. GET /api/projects/{id}/keywords
+Current Status: Returns 404 "Project not found"
+Required: Return project keywords and suggestions
+Headers: X-User-Id required
+Response:
+{
+  "suggested_keywords": [{"word": string, "score": number}],
+  "selected_keywords": {
+    "include": [string],
+    "exclude": [string]
+  }
+}
+3. GET /api/projects/{id}/citations/filter
+Current Status: Frontend calls this but gets no citations
+Required: Return citations with relevance scores for the project
+Headers: X-User-Id required
+Query Params: iteration (optional), is_relevant (optional)
+Response:
+{
+  "citations": [{
+    "id": number,
+    "title": string,
+    "abstract": string,
+    "is_relevant": boolean,
+    "iteration": number,
+    "relevance_score": number
+  }]
+}
+4. GET /api/projects/{id}/labeled-citations
+Current Status: Not implemented
+Required: Return all labeled citations across iterations
+Headers: X-User-Id required
+Response: {"labeled_citations": [...]}
+5. GET /api/projects/{id}/iterations
+Current Status: Not implemented
+Required: Return iteration info and metrics
+Headers: X-User-Id required
+Response:
+{
+  "current_iteration": number,
+  "max_iterations": number,
+  "metrics": object
+}
+What Works Currently:
+
+Authentication endpoints (login/signup)
+GET /api/projects (returns real project data)
+Basic project creation
+Priority Order:
+
+DELETE /api/projects/{id} (highest priority - users can't delete projects)
+GET /api/projects/{id}/keywords (breaks Edit functionality)
+GET /api/projects/{id}/citations/filter (breaks View functionality)
+GET /api/projects/{id}/labeled-citations & iterations (for full workflow)
