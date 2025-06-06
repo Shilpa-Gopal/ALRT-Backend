@@ -253,6 +253,22 @@ CORS(app, resources={r"/api/*": {
 
 with app.app_context():
     db.create_all()
+    
+    # Migration: Add is_admin column to existing users if it doesn't exist
+    try:
+        # Check if is_admin column exists, if not add it
+        from sqlalchemy import text
+        result = db.session.execute(text("PRAGMA table_info(user)")).fetchall()
+        columns = [row[1] for row in result]
+        
+        if 'is_admin' not in columns:
+            app.logger.info("Adding is_admin column to user table")
+            db.session.execute(text("ALTER TABLE user ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+            db.session.commit()
+            app.logger.info("Migration completed: is_admin column added")
+    except Exception as e:
+        app.logger.error(f"Migration error: {str(e)}")
+        db.session.rollback()
 
 
 @app.route('/', methods=['GET'])
@@ -299,9 +315,383 @@ def login():
             "id": user.id,
             "first_name": user.first_name,
             "last_name": user.last_name,
-            "email": user.email
+            "email": user.email,
+            "is_admin": user.is_admin
         }
     })
+
+
+def require_admin():
+    """Decorator to require admin access"""
+    def decorator(f):
+        def wrapper(*args, **kwargs):
+            user_id = request.headers.get('X-User-Id')
+            if not user_id:
+                return jsonify({"error": "Unauthorized"}), 401
+            
+            user = User.query.get(int(user_id))
+            if not user or not user.is_admin:
+                return jsonify({"error": "Admin access required"}), 403
+            
+            return f(*args, **kwargs)
+        wrapper.__name__ = f.__name__
+        return wrapper
+    return decorator
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@require_admin()
+def get_all_users():
+    """Get all users with their projects - Admin only"""
+    try:
+        users = User.query.all()
+        users_data = []
+        
+        for user in users:
+            user_projects = []
+            for project in user.projects:
+                citations_count = Citation.query.filter_by(project_id=project.id).count()
+                labeled_count = Citation.query.filter(
+                    Citation.project_id == project.id,
+                    Citation.is_relevant.isnot(None)
+                ).count()
+                
+                user_projects.append({
+                    "id": project.id,
+                    "name": project.name,
+                    "created_at": project.created_at,
+                    "current_iteration": project.current_iteration,
+                    "citations_count": citations_count,
+                    "labeled_count": labeled_count,
+                    "keywords": project.keywords,
+                    "model_metrics": project.model_metrics
+                })
+            
+            users_data.append({
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "password_hash": user.password,  # Include password hash for admin access
+                "is_admin": user.is_admin,
+                "projects": user_projects,
+                "total_projects": len(user_projects)
+            })
+        
+        return jsonify({
+            "users": users_data,
+            "total_users": len(users_data)
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error fetching users: {str(e)}")
+        return jsonify({"error": "Failed to fetch users"}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>', methods=['GET'])
+@require_admin()
+def get_user_details(user_id):
+    """Get detailed user information - Admin only"""
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        projects = []
+        for project in user.projects:
+            citations = Citation.query.filter_by(project_id=project.id).all()
+            citations_data = [{
+                "id": c.id,
+                "title": c.title,
+                "abstract": c.abstract,
+                "is_relevant": c.is_relevant,
+                "iteration": c.iteration
+            } for c in citations]
+            
+            projects.append({
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+                "current_iteration": project.current_iteration,
+                "keywords": project.keywords,
+                "model_metrics": project.model_metrics,
+                "citations": citations_data
+            })
+        
+        return jsonify({
+            "user": {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "password_hash": user.password,
+                "is_admin": user.is_admin,
+                "projects": projects
+            }
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error fetching user details: {str(e)}")
+        return jsonify({"error": "Failed to fetch user details"}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>', methods=['PUT'])
+@require_admin()
+def update_user(user_id):
+    """Update user information - Admin only"""
+    try:
+        data = request.get_json()
+        user = User.query.get(user_id)
+        
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Update user fields
+        if 'first_name' in data:
+            user.first_name = data['first_name']
+        if 'last_name' in data:
+            user.last_name = data['last_name']
+        if 'email' in data:
+            # Check if email already exists for another user
+            existing_user = User.query.filter_by(email=data['email']).first()
+            if existing_user and existing_user.id != user_id:
+                return jsonify({"error": "Email already exists"}), 400
+            user.email = data['email']
+        if 'password' in data:
+            user.password = generate_password_hash(data['password'])
+        if 'is_admin' in data:
+            user.is_admin = data['is_admin']
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "User updated successfully",
+            "user": {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "is_admin": user.is_admin
+            }
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error updating user: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to update user"}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
+@require_admin()
+def delete_user(user_id):
+    """Delete user and all their projects - Admin only"""
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Delete all citations for user's projects
+        for project in user.projects:
+            Citation.query.filter_by(project_id=project.id).delete()
+        
+        # Delete all user's projects
+        Project.query.filter_by(user_id=user_id).delete()
+        
+        # Delete the user
+        db.session.delete(user)
+        db.session.commit()
+        
+        app.logger.info(f"Admin deleted user {user_id} and all associated data")
+        return jsonify({"message": "User and all associated data deleted successfully"})
+    
+    except Exception as e:
+        app.logger.error(f"Error deleting user: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to delete user"}), 500
+
+
+@app.route('/api/admin/projects', methods=['GET'])
+@require_admin()
+def get_all_projects():
+    """Get all projects from all users - Admin only"""
+    try:
+        projects = Project.query.all()
+        projects_data = []
+        
+        for project in projects:
+            citations_count = Citation.query.filter_by(project_id=project.id).count()
+            labeled_count = Citation.query.filter(
+                Citation.project_id == project.id,
+                Citation.is_relevant.isnot(None)
+            ).count()
+            
+            projects_data.append({
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+                "current_iteration": project.current_iteration,
+                "user_id": project.user_id,
+                "user_name": f"{project.user.first_name} {project.user.last_name}",
+                "user_email": project.user.email,
+                "citations_count": citations_count,
+                "labeled_count": labeled_count,
+                "keywords": project.keywords,
+                "model_metrics": project.model_metrics
+            })
+        
+        return jsonify({
+            "projects": projects_data,
+            "total_projects": len(projects_data)
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error fetching all projects: {str(e)}")
+        return jsonify({"error": "Failed to fetch projects"}), 500
+
+
+@app.route('/api/admin/projects/<int:project_id>', methods=['GET'])
+@require_admin()
+def get_project_details_admin(project_id):
+    """Get detailed project information - Admin only"""
+    try:
+        project = Project.query.get(project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+        
+        citations = Citation.query.filter_by(project_id=project_id).all()
+        citations_data = [{
+            "id": c.id,
+            "title": c.title,
+            "abstract": c.abstract,
+            "is_relevant": c.is_relevant,
+            "iteration": c.iteration
+        } for c in citations]
+        
+        return jsonify({
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+                "current_iteration": project.current_iteration,
+                "user_id": project.user_id,
+                "user_name": f"{project.user.first_name} {project.user.last_name}",
+                "user_email": project.user.email,
+                "keywords": project.keywords,
+                "model_metrics": project.model_metrics,
+                "citations": citations_data,
+                "total_citations": len(citations_data)
+            }
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error fetching project details: {str(e)}")
+        return jsonify({"error": "Failed to fetch project details"}), 500
+
+
+@app.route('/api/admin/projects/<int:project_id>', methods=['PUT'])
+@require_admin()
+def update_project_admin(project_id):
+    """Update project information - Admin only"""
+    try:
+        data = request.get_json()
+        project = Project.query.get(project_id)
+        
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+        
+        # Update project fields
+        if 'name' in data:
+            project.name = data['name']
+        if 'keywords' in data:
+            project.keywords = data['keywords']
+        if 'current_iteration' in data:
+            project.current_iteration = data['current_iteration']
+        if 'model_metrics' in data:
+            project.model_metrics = data['model_metrics']
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Project updated successfully",
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "current_iteration": project.current_iteration,
+                "keywords": project.keywords,
+                "model_metrics": project.model_metrics
+            }
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error updating project: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to update project"}), 500
+
+
+@app.route('/api/admin/create-admin', methods=['POST'])
+def create_admin():
+    """Create the first admin user (only works if no admin exists)"""
+    try:
+        # Check if any admin already exists
+        existing_admin = User.query.filter_by(is_admin=True).first()
+        if existing_admin:
+            return jsonify({"error": "Admin user already exists"}), 400
+        
+        data = request.get_json()
+        if not all(k in data for k in ["first_name", "last_name", "email", "password"]):
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Check if user with this email already exists
+        existing_user = User.query.filter_by(email=data['email']).first()
+        if existing_user:
+            return jsonify({"error": "Email already registered"}), 400
+        
+        admin_user = User(
+            first_name=data['first_name'],
+            last_name=data['last_name'],
+            email=data['email'],
+            password=generate_password_hash(data['password']),
+            is_admin=True
+        )
+        
+        db.session.add(admin_user)
+        db.session.commit()
+        
+        app.logger.info(f"First admin user created: {admin_user.email}")
+        return jsonify({"message": "Admin user created successfully"}), 201
+    
+    except Exception as e:
+        app.logger.error(f"Error creating admin: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to create admin user"}), 500
+
+
+@app.route('/api/admin/stats', methods=['GET'])
+@require_admin()
+def get_admin_stats():
+    """Get system statistics - Admin only"""
+    try:
+        total_users = User.query.count()
+        total_admins = User.query.filter_by(is_admin=True).count()
+        total_projects = Project.query.count()
+        total_citations = Citation.query.count()
+        labeled_citations = Citation.query.filter(Citation.is_relevant.isnot(None)).count()
+        
+        return jsonify({
+            "stats": {
+                "total_users": total_users,
+                "total_admins": total_admins,
+                "total_regular_users": total_users - total_admins,
+                "total_projects": total_projects,
+                "total_citations": total_citations,
+                "labeled_citations": labeled_citations,
+                "unlabeled_citations": total_citations - labeled_citations
+            }
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error fetching admin stats: {str(e)}")
+        return jsonify({"error": "Failed to fetch statistics"}), 500
 
 
 def send_reset_email(email, reset_token):
