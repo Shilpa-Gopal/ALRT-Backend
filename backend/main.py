@@ -486,6 +486,37 @@ def update_user(user_id):
         return jsonify({"error": "Failed to update user"}), 500
 
 
+@app.route('/api/admin/users/<int:user_id>/reset-password', methods=['POST'])
+@require_admin()
+def admin_reset_password(user_id):
+    """Admin can reset any user's password"""
+    try:
+        data = request.get_json()
+        user = User.query.get(user_id)
+        
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        new_password = data.get('new_password')
+        if not new_password or len(new_password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters"}), 400
+        
+        user.password = generate_password_hash(new_password)
+        db.session.commit()
+        
+        app.logger.info(f"Admin reset password for user {user.email}")
+        
+        return jsonify({
+            "message": f"Password reset successfully for {user.email}",
+            "new_password": new_password  # Only show in response for admin convenience
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error in admin password reset: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to reset password"}), 500
+
+
 @app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
 @require_admin()
 def delete_user(user_id):
