@@ -15,6 +15,8 @@ from app.ml_system import LiteratureReviewSystem
 import hashlib
 import re
 import requests
+from datetime import datetime
+from sqlalchemy import text
 
 app = create_app()
 
@@ -286,7 +288,7 @@ def health_check():
     """Health check endpoint"""
     try:
         # Test database connection
-        db.session.execute('SELECT 1')
+        db.session.execute(text('SELECT 1'))
         return jsonify({
             "status": "healthy",
             "database": "connected",
