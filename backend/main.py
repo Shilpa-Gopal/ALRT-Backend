@@ -1113,7 +1113,17 @@ def add_citations(project_id):
             app.logger.error("No user ID in request headers")
             return jsonify({"error": "Unauthorized"}), 401
 
-        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
         if not project:
             app.logger.error(f"Project {project_id} not found for user {user_id}")
             return jsonify({"error": "Project not found"}), 404
@@ -1245,7 +1255,17 @@ def update_citation(project_id, citation_id):
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1285,7 +1305,17 @@ def train_model(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1342,7 +1372,17 @@ def get_keywords(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1375,7 +1415,17 @@ def update_keywords(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1405,7 +1455,17 @@ def filter_citations(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1438,7 +1498,17 @@ def download_results(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1503,7 +1573,17 @@ def predict_citations(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1523,7 +1603,17 @@ def get_iteration_info(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1636,7 +1726,17 @@ def get_labeled_citations(project_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+        
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1660,7 +1760,17 @@ def remove_duplicates(project_id):
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
