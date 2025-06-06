@@ -696,6 +696,34 @@ def update_project_admin(project_id):
         return jsonify({"error": "Failed to update project"}), 500
 
 
+@app.route('/api/admin/projects/<int:project_id>', methods=['DELETE'])
+@require_admin()
+def delete_project_admin(project_id):
+    """Delete project - Admin only"""
+    try:
+        project = Project.query.get(project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+        
+        app.logger.info(f"Admin deleting project {project_id}")
+        
+        # Delete all citations first
+        citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
+        app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
+        
+        # Delete the project
+        db.session.delete(project)
+        db.session.commit()
+        
+        app.logger.info(f"Successfully deleted project {project_id}")
+        return jsonify({"message": "Project deleted successfully"}), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error deleting project {project_id}: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
+
+
 @app.route('/api/admin/create-admin', methods=['POST'])
 def create_admin():
     """Create the first admin user (only works if no admin exists)"""
@@ -990,20 +1018,33 @@ def get_projects():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # Convert user_id to integer and strictly filter by user_id
         user_id_int = int(user_id)
-        projects = Project.query.filter_by(user_id=user_id_int).all()
-        app.logger.info(f"Found {len(projects)} projects for user {user_id_int}")
+        
+        # Check if user exists and get admin status
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+        
+        # Admin sees all projects, regular users see only their own
+        if user.is_admin:
+            projects = Project.query.all()
+            app.logger.info(f"Admin user {user_id_int} - Found {len(projects)} total projects")
+        else:
+            projects = Project.query.filter_by(user_id=user_id_int).all()
+            app.logger.info(f"Regular user {user_id_int} - Found {len(projects)} personal projects")
 
         return jsonify({
             "projects": [{
                 "id": p.id,
                 "name": p.name,
                 "created_at": p.created_at,
-                "current_iteration": p.current_iteration
+                "current_iteration": p.current_iteration,
+                "user_id": p.user_id,
+                "owner_name": f"{p.user.first_name} {p.user.last_name}" if user.is_admin else None
             } for p in projects]
         })
     except Exception as e:
+        app.logger.error(f"Error fetching projects for user {user_id}: {str(e)}")
         return jsonify({"error": "Failed to fetch projects"}), 500
 
 
@@ -1502,7 +1543,18 @@ def get_project_details(project_id):
             return jsonify({"error": "Unauthorized"}), 401
 
         user_id_int = int(user_id)
-        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
+        # Check if user is admin
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1544,13 +1596,23 @@ def delete_project(project_id):
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        # Convert user_id to integer for proper filtering
         user_id_int = int(user_id)
-        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+        
+        # Check if user exists and get admin status
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+            
+        # Allow admin to delete any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
-        app.logger.info(f"Deleting project {project_id} for user {user_id_int}")
+        app.logger.info(f"Deleting project {project_id} by user {user_id_int} (admin: {user.is_admin})")
 
         # Delete all citations first
         citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
