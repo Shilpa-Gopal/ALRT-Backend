@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, precision_recall_curve
 from xgboost import XGBClassifier
+from scipy import sparse
 from .models import Citation, db
 import logging
 import os
@@ -42,13 +43,43 @@ class LiteratureReviewSystem:
             'iteration': c.iteration
         } for c in citations])
 
-    def prepare_features(self, data):
+    def prepare_features(self, data, project=None):
         text_data = data['title'] + ' ' + data['abstract']
-        features = self.vectorizer.fit_transform(text_data)
-        return features
+        
+        # Base TF-IDF features
+        base_features = self.vectorizer.fit_transform(text_data)
+        
+        # Add include keyword features if project keywords are available
+        if project and project.keywords and project.keywords.get('include'):
+            include_keywords = [kw.lower() for kw in project.keywords.get('include', [])]
+            
+            # Create include keyword features
+            include_features = []
+            for _, row in data.iterrows():
+                text = f"{row['title']} {row['abstract']}".lower()
+                keyword_scores = []
+                
+                for keyword in include_keywords:
+                    # Count occurrences and normalize by text length
+                    occurrences = text.count(keyword)
+                    normalized_score = occurrences / max(len(text.split()), 1)
+                    keyword_scores.append(normalized_score)
+                
+                include_features.append(keyword_scores)
+            
+            # Convert to sparse matrix and combine with base features
+            include_matrix = sparse.csr_matrix(include_features)
+            features = sparse.hstack([base_features, include_matrix])
+            
+            self.logger.info(f"Enhanced features with {len(include_keywords)} include keywords")
+            return features
+        
+        return base_features
 
     def predict_relevance(self, citations):
         try:
+            from .models import Project
+            
             new_data = pd.DataFrame(citations)
             data = self.get_project_data()
             labeled_data = data[data['is_relevant'].notna()]
@@ -56,13 +87,16 @@ class LiteratureReviewSystem:
             if len(labeled_data) < 10:
                 return [{"error": "Not enough labeled data for prediction"}] * len(citations)
 
-            X = self.prepare_features(labeled_data)
+            # Get project for keyword enhancement
+            project = Project.query.get(self.project_id)
+
+            X = self.prepare_features(labeled_data, project)
             y = labeled_data['is_relevant'].astype(int)
 
-            model = XGBClassifier(max_depth=3, learning_rate=0.1, n_estimators=100)
+            model = XGBClassifier(max_depth=3, learning_rate=0.1, n_estimators=100, random_state=42)
             model.fit(X, y)
 
-            X_new = self.prepare_features(new_data)
+            X_new = self.prepare_features(new_data, project)
             predictions = model.predict_proba(X_new)
 
             return [{
@@ -91,6 +125,8 @@ class LiteratureReviewSystem:
 
     def train_iteration(self, iteration: int = 0):
         try:
+            from .models import Project
+            
             data = self.get_project_data()
             labeled_data = data[data['is_relevant'].notna()]
 
@@ -104,9 +140,16 @@ class LiteratureReviewSystem:
             if relevant_count < 5 or irrelevant_count < 5:
                 return {'error': f'Need at least 5 relevant and 5 irrelevant citations. Have {relevant_count} relevant and {irrelevant_count} irrelevant.'}
 
+            # Get project for keyword enhancement
+            project = Project.query.get(self.project_id)
+            
+            # Log include keyword usage
+            include_keywords = project.keywords.get('include', []) if project.keywords else []
             self.logger.info(f"Training with {len(labeled_data)} labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant)")
+            if include_keywords:
+                self.logger.info(f"Using {len(include_keywords)} include keywords for feature enhancement: {include_keywords}")
 
-            X = self.prepare_features(labeled_data)
+            X = self.prepare_features(labeled_data, project)
             y = labeled_data['is_relevant'].astype(int)
 
             model = XGBClassifier(
@@ -126,7 +169,8 @@ class LiteratureReviewSystem:
                 'metrics': metrics,
                 'samples_checked': len(y),
                 'relevant_count': relevant_count,
-                'irrelevant_count': irrelevant_count
+                'irrelevant_count': irrelevant_count,
+                'include_keywords_used': len(include_keywords)
             }
 
         except Exception as e:

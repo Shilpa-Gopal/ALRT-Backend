@@ -76,16 +76,20 @@ def calculate_completeness_score(row):
     return score
 
 def apply_keyword_filtering(citations, project):
-    """Apply keyword exclusion rules to filter citations"""
-    if not project.keywords or not project.keywords.get('exclude'):
+    """Apply keyword filtering with prioritization for include keywords"""
+    if not project.keywords:
         return citations
+    
+    include_keywords = project.keywords.get('include', [])
+    exclude_keywords = project.keywords.get('exclude', [])
     
     filtered_citations = []
     for citation in citations:
-        should_exclude = False
         text = f"{citation.title} {citation.abstract}".lower()
         
-        for exclude_kw in project.keywords.get('exclude', []):
+        # First check exclude keywords
+        should_exclude = False
+        for exclude_kw in exclude_keywords:
             word = exclude_kw['word'].lower()
             frequency = exclude_kw.get('frequency', 1)
             occurrences = text.count(word)
@@ -95,7 +99,19 @@ def apply_keyword_filtering(citations, project):
                 break
         
         if not should_exclude:
+            # Calculate include keyword score for prioritization
+            include_score = 0
+            for include_word in include_keywords:
+                word = include_word.lower()
+                occurrences = text.count(word)
+                include_score += occurrences
+            
+            # Add include score as metadata for later use
+            citation._include_score = include_score
             filtered_citations.append(citation)
+    
+    # Sort by include keyword score (highest first) to prioritize include keywords
+    filtered_citations.sort(key=lambda c: getattr(c, '_include_score', 0), reverse=True)
     
     return filtered_citations
 
