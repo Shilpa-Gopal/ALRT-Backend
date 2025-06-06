@@ -75,6 +75,30 @@ def calculate_completeness_score(row):
 
     return score
 
+def apply_keyword_filtering(citations, project):
+    """Apply keyword exclusion rules to filter citations"""
+    if not project.keywords or not project.keywords.get('exclude'):
+        return citations
+    
+    filtered_citations = []
+    for citation in citations:
+        should_exclude = False
+        text = f"{citation.title} {citation.abstract}".lower()
+        
+        for exclude_kw in project.keywords.get('exclude', []):
+            word = exclude_kw['word'].lower()
+            frequency = exclude_kw.get('frequency', 1)
+            occurrences = text.count(word)
+            
+            if occurrences >= frequency:
+                should_exclude = True
+                break
+        
+        if not should_exclude:
+            filtered_citations.append(citation)
+    
+    return filtered_citations
+
 def process_duplicates_and_create_citations(df, project_id, current_iteration):
     """Optimized duplicate processing using vectorization and hashing"""
 
@@ -1525,13 +1549,17 @@ def filter_citations(project_id):
                                    type=lambda v: v.lower() == 'true'
                                    if v else None)
 
-    query = Citation.query.filter_by(project_id=project_id)
+    query = Citation.query.filter_by(project_id=project_id, is_duplicate=False)
     if iteration is not None:
         query = query.filter_by(iteration=iteration)
     if is_relevant is not None:
         query = query.filter_by(is_relevant=is_relevant)
 
     citations = query.all()
+    
+    # Apply keyword filtering
+    filtered_citations = apply_keyword_filtering(citations, project)
+    
     return jsonify({
         "citations": [{
             "id": c.id,
@@ -1540,7 +1568,10 @@ def filter_citations(project_id):
             "is_relevant": c.is_relevant,
             "iteration": c.iteration,
             "is_duplicate": getattr(c, 'is_duplicate', False)
-        } for c in citations]
+        } for c in filtered_citations],
+        "total_before_filtering": len(citations),
+        "total_after_filtering": len(filtered_citations),
+        "filtered_by_keywords": len(citations) - len(filtered_citations)
     })
 
 
@@ -1706,6 +1737,13 @@ def get_project_details(project_id):
             Citation.is_relevant.isnot(None)
         ).count()
 
+        # Apply keyword filtering to citations
+        non_duplicate_citations = [c for c in citations if not getattr(c, 'is_duplicate', False)]
+        filtered_citations = apply_keyword_filtering(non_duplicate_citations, project)
+        
+        # Count labeled citations from filtered set
+        filtered_labeled_count = sum(1 for c in filtered_citations if c.is_relevant is not None)
+
         return jsonify({
             "project": {
                 "id": project.id,
@@ -1714,8 +1752,11 @@ def get_project_details(project_id):
                 "current_iteration": project.current_iteration,
                 "keywords": project.keywords,
                 "model_metrics": project.model_metrics,
-                "citations_count": len(citations),
-                "labeled_count": labeled_count
+                "citations_count": len(filtered_citations),
+                "labeled_count": filtered_labeled_count,
+                "total_uploaded": len(citations),
+                "duplicates_count": sum(1 for c in citations if getattr(c, 'is_duplicate', False)),
+                "keyword_filtered_count": len(non_duplicate_citations) - len(filtered_citations)
             },
             "citations": [{
                 "id": c.id,
@@ -1724,7 +1765,7 @@ def get_project_details(project_id):
                 "is_relevant": c.is_relevant,
                 "iteration": c.iteration,
                 "is_duplicate": getattr(c, 'is_duplicate', False)
-            } for c in citations]
+            } for c in filtered_citations]
         })
 
     except Exception as e:
