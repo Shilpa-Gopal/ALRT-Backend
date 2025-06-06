@@ -1721,39 +1721,54 @@ def delete_project(project_id):
     try:
         user_id = request.headers.get('X-User-Id')
         if not user_id:
+            app.logger.error("No X-User-Id header provided")
             return jsonify({"error": "Unauthorized"}), 401
 
-        user_id_int = int(user_id)
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            app.logger.error(f"Invalid user ID format: {user_id}")
+            return jsonify({"error": "Invalid user ID"}), 401
         
         # Check if user exists and get admin status
         user = User.query.get(user_id_int)
         if not user:
+            app.logger.error(f"User {user_id_int} not found")
             return jsonify({"error": "User not found"}), 401
             
         # Allow admin to delete any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
+            app.logger.info(f"Admin user {user_id_int} attempting to delete project {project_id}")
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+            app.logger.info(f"Regular user {user_id_int} attempting to delete their project {project_id}")
             
         if not project:
-            return jsonify({"error": "Project not found"}), 404
+            app.logger.error(f"Project {project_id} not found or user {user_id_int} doesn't have access")
+            return jsonify({"error": "Project not found or access denied"}), 404
 
-        app.logger.info(f"Deleting project {project_id} by user {user_id_int} (admin: {user.is_admin})")
+        app.logger.info(f"Starting deletion of project {project_id} by user {user_id_int} (admin: {user.is_admin})")
 
-        # Delete all citations first
-        citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
-        app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
+        try:
+            # Delete all citations first
+            citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
+            app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
 
-        # Delete the project
-        db.session.delete(project)
-        db.session.commit()
+            # Delete the project
+            db.session.delete(project)
+            db.session.commit()
 
-        app.logger.info(f"Successfully deleted project {project_id}")
-        return jsonify({"message": "Project deleted successfully"}), 200
+            app.logger.info(f"Successfully deleted project {project_id}")
+            return jsonify({"success": True, "message": "Project deleted successfully"}), 200
+
+        except Exception as delete_error:
+            app.logger.error(f"Database error during project deletion: {str(delete_error)}")
+            db.session.rollback()
+            return jsonify({"error": "Database error during deletion", "details": str(delete_error)}), 500
 
     except Exception as e:
-        app.logger.error(f"Error deleting project {project_id}: {str(e)}")
+        app.logger.error(f"General error deleting project {project_id}: {str(e)}")
         db.session.rollback()
         return jsonify({"error": "Failed to delete project", "details": str(e)}), 500
 
