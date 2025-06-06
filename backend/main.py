@@ -276,6 +276,25 @@ with app.app_context():
     except Exception as e:
         app.logger.error(f"Migration error: {str(e)}")
         db.session.rollback()
+    
+    # Migration: Add is_duplicate column to existing citations if it doesn't exist
+    try:
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'citation' AND column_name = 'is_duplicate'
+        """)).fetchall()
+        
+        if not result:
+            app.logger.info("Adding is_duplicate column to citation table")
+            db.session.execute(text("ALTER TABLE citation ADD COLUMN is_duplicate BOOLEAN DEFAULT FALSE"))
+            db.session.commit()
+            app.logger.info("Migration completed: is_duplicate column added")
+        else:
+            app.logger.info("is_duplicate column already exists")
+    except Exception as e:
+        app.logger.error(f"Migration error for is_duplicate: {str(e)}")
+        db.session.rollback()
 
 
 @app.route('/', methods=['GET'])
@@ -1320,53 +1339,49 @@ def train_model(project_id):
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
-        # Check if we have enough labeled citations (at least 10 total)
-        labeled_citations = Citation.query.filter(
+        # Get only user-labeled citations (exclude duplicates and keyword-excluded citations)
+        user_labeled_citations = Citation.query.filter(
             Citation.project_id == project_id,
-            Citation.is_relevant.isnot(None)
+            Citation.is_relevant.isnot(None),
+            Citation.is_duplicate == False  # Exclude duplicates from training
         ).all()
 
-        if len(labeled_citations) < 10:
-            return jsonify({
-                "error": f"Need at least 10 labeled citations to train. Currently have {len(labeled_citations)} labeled citations."
-            }), 400
-
-        # Count relevant and irrelevant citations
-        relevant_count = sum(1 for c in labeled_citations if c.is_relevant == True)
-        irrelevant_count = sum(1 for c in labeled_citations if c.is_relevant == False)
-
-        if relevant_count < 5 or irrelevant_count < 5:
-            return jsonify({
-                "error": f"Need at least 5 relevant and 5 irrelevant citations. Currently have {relevant_count} relevant and {irrelevant_count} irrelevant."
-            }), 400
-
-        app.logger.info(f"Training model for project {project_id} with {len(labeled_citations)} labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant)")
-
-        # Process citations based on exclude keywords
-        citations = Citation.query.filter_by(project_id=project_id).all()
-        excluded_citations = []
-        exclude_reasons = {}
-
-        for citation in citations:
+        # Filter out citations that would be excluded by keywords but keep user labels intact
+        filtered_citations = []
+        keyword_excluded_count = 0
+        
+        for citation in user_labeled_citations:
+            should_exclude = False
             text = f"{citation.title} {citation.abstract}".lower()
+            
             for exclude_kw in project.keywords.get('exclude', []):
                 word = exclude_kw['word'].lower()
                 frequency = exclude_kw.get('frequency', 1)
                 occurrences = text.count(word)
-
+                
                 if occurrences >= frequency:
-                    excluded_citations.append(citation.id)
-                    if word not in exclude_reasons:
-                        exclude_reasons[word] = {'frequency': frequency, 'count': 0}
-                    exclude_reasons[word]['count'] += 1
+                    should_exclude = True
+                    keyword_excluded_count += 1
                     break
+            
+            if not should_exclude:
+                filtered_citations.append(citation)
 
-        # Filter out excluded citations
-        if excluded_citations:
-            Citation.query.filter(Citation.id.in_(excluded_citations)).update(
-                {Citation.is_relevant: False}, synchronize_session=False
-            )
-            db.session.commit()
+        if len(filtered_citations) < 10:
+            return jsonify({
+                "error": f"Need at least 10 user-labeled citations (excluding duplicates and keyword-filtered) to train. Currently have {len(filtered_citations)} valid labeled citations. Total user-labeled: {len(user_labeled_citations)}, Keyword-excluded: {keyword_excluded_count}"
+            }), 400
+
+        # Count relevant and irrelevant citations from filtered set
+        relevant_count = sum(1 for c in filtered_citations if c.is_relevant == True)
+        irrelevant_count = sum(1 for c in filtered_citations if c.is_relevant == False)
+
+        if relevant_count < 5 or irrelevant_count < 5:
+            return jsonify({
+                "error": f"Need at least 5 relevant and 5 irrelevant user-labeled citations (excluding duplicates and keyword-filtered). Currently have {relevant_count} relevant and {irrelevant_count} irrelevant from {len(filtered_citations)} valid citations."
+            }), 400
+
+        app.logger.info(f"Training model for project {project_id} with {len(filtered_citations)} user-labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant). Excluded {keyword_excluded_count} due to keywords.")
 
         review_system = LiteratureReviewSystem(project_id)
         result = review_system.train_iteration(project.current_iteration)
@@ -1375,13 +1390,12 @@ def train_model(project_id):
             app.logger.error(f"Training error for project {project_id}: {result['error']}")
             return jsonify(result), 400
 
-        # Add exclusion metadata to result
-        result['excluded_citations'] = {
-            'total': len(excluded_citations),
-            'reasons': [
-                {'keyword': k, 'frequency': v['frequency'], 'citations_excluded': v['count']}
-                for k, v in exclude_reasons.items()
-            ]
+        # Add filtering metadata to result
+        result['filtering_info'] = {
+            'total_user_labeled': len(user_labeled_citations),
+            'keyword_excluded': keyword_excluded_count,
+            'duplicates_excluded': len(user_labeled_citations) - len(filtered_citations) - keyword_excluded_count,
+            'used_for_training': len(filtered_citations)
         }
 
         # Store metrics and increment iteration
@@ -1524,7 +1538,8 @@ def filter_citations(project_id):
             "title": c.title,
             "abstract": c.abstract,
             "is_relevant": c.is_relevant,
-            "iteration": c.iteration
+            "iteration": c.iteration,
+            "is_duplicate": getattr(c, 'is_duplicate', False)
         } for c in citations]
     })
 
@@ -1707,7 +1722,8 @@ def get_project_details(project_id):
                 "title": c.title,
                 "abstract": c.abstract,
                 "is_relevant": c.is_relevant,
-                "iteration": c.iteration
+                "iteration": c.iteration,
+                "is_duplicate": getattr(c, 'is_duplicate', False)
             } for c in citations]
         })
 
@@ -1859,18 +1875,22 @@ def remove_duplicates(project_id):
         citations_to_keep = [citations[i] for i in kept_indices]
         citations_to_remove = [citations[i] for i in range(len(citations)) if i not in kept_indices]
 
-        # Remove duplicates from database
-        duplicates_removed = len(citations_to_remove)
-        for citation in citations_to_remove:
-            db.session.delete(citation)
+        # Mark duplicates instead of deleting them
+        duplicates_marked = len(citations_to_remove)
+        citation_ids_to_mark = [citations[i].id for i in range(len(citations)) if i not in kept_indices]
+        
+        if citation_ids_to_mark:
+            Citation.query.filter(Citation.id.in_(citation_ids_to_mark)).update(
+                {Citation.is_duplicate: True}, synchronize_session=False
+            )
 
         db.session.commit()
-        app.logger.info(f"Removed {duplicates_removed} duplicate citations from project {project_id}")
+        app.logger.info(f"Marked {duplicates_marked} citations as duplicates in project {project_id}")
 
         return jsonify({
-            "message": f"Advanced duplicate removal completed",
-            "duplicates_removed": duplicates_removed,
-            "remaining_citations": len(citations_to_keep),
+            "message": f"Advanced duplicate detection completed",
+            "duplicates_marked": duplicates_marked,
+            "unique_citations": len(citations_to_keep),
             "removal_strategy": result['removal_strategy'],
             "duplicate_details": result['duplicate_details'][:10],  # Show first 10 examples
             "processing_summary": result['processing_summary']

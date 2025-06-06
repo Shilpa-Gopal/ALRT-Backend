@@ -28,3 +28,4 @@ class Citation(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
     is_relevant = db.Column(db.Boolean, nullable=True)
     iteration = db.Column(db.Integer, default=0)
+    is_duplicate = db.Column(db.Boolean, default=False)

@@ -30,7 +30,11 @@ class LiteratureReviewSystem:
         self.logger = logging.getLogger(f'project_{self.project_id}')
 
     def get_project_data(self):
-        citations = Citation.query.filter_by(project_id=self.project_id).all()
+        # Only get non-duplicate citations for training
+        citations = Citation.query.filter_by(
+            project_id=self.project_id,
+            is_duplicate=False
+        ).all()
         return pd.DataFrame([{
             'title': c.title,
             'abstract': c.abstract,
