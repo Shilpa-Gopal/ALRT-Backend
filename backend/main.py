@@ -1668,7 +1668,7 @@ def download_results(project_id):
     # Sort by relevance score in descending order
     data_rows.sort(key=lambda x: x['relevance_score'], reverse=True)
 
-```python
+
     # Write sorted data
     for row, data in enumerate(data_rows, start=2):
         worksheet.cell(row=row, column=1, value=data['title'])
