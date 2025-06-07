@@ -79,25 +79,25 @@ def apply_keyword_filtering(citations, project):
     """Apply keyword filtering with prioritization for include keywords"""
     if not project.keywords:
         return citations
-    
+
     include_keywords = project.keywords.get('include', [])
     exclude_keywords = project.keywords.get('exclude', [])
-    
+
     filtered_citations = []
     for citation in citations:
         text = f"{citation.title} {citation.abstract}".lower()
-        
+
         # First check exclude keywords
         should_exclude = False
         for exclude_kw in exclude_keywords:
             word = exclude_kw['word'].lower()
             frequency = exclude_kw.get('frequency', 1)
             occurrences = text.count(word)
-            
+
             if occurrences >= frequency:
                 should_exclude = True
                 break
-        
+
         if not should_exclude:
             # Calculate include keyword score for prioritization
             include_score = 0
@@ -105,14 +105,14 @@ def apply_keyword_filtering(citations, project):
                 word = include_word.lower()
                 occurrences = text.count(word)
                 include_score += occurrences
-            
+
             # Add include score as metadata for later use
             citation._include_score = include_score
             filtered_citations.append(citation)
-    
+
     # Sort by include keyword score (highest first) to prioritize include keywords
     filtered_citations.sort(key=lambda c: getattr(c, '_include_score', 0), reverse=True)
-    
+
     return filtered_citations
 
 def process_duplicates_and_create_citations(df, project_id, current_iteration):
@@ -295,7 +295,7 @@ CORS(app, resources={r"/api/*": {
 
 with app.app_context():
     db.create_all()
-    
+
     # Migration: Add is_admin column to existing users if it doesn't exist
     try:
         # Check if is_admin column exists using PostgreSQL system tables
@@ -305,7 +305,7 @@ with app.app_context():
             FROM information_schema.columns 
             WHERE table_name = 'user' AND column_name = 'is_admin'
         """)).fetchall()
-        
+
         if not result:
             app.logger.info("Adding is_admin column to user table")
             db.session.execute(text("ALTER TABLE \"user\" ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
@@ -316,7 +316,7 @@ with app.app_context():
     except Exception as e:
         app.logger.error(f"Migration error: {str(e)}")
         db.session.rollback()
-    
+
     # Migration: Add is_duplicate column to existing citations if it doesn't exist
     try:
         result = db.session.execute(text("""
@@ -324,7 +324,7 @@ with app.app_context():
             FROM information_schema.columns 
             WHERE table_name = 'citation' AND column_name = 'is_duplicate'
         """)).fetchall()
-        
+
         if not result:
             app.logger.info("Adding is_duplicate column to citation table")
             db.session.execute(text("ALTER TABLE citation ADD COLUMN is_duplicate BOOLEAN DEFAULT FALSE"))
@@ -424,11 +424,11 @@ def require_admin():
             user_id = request.headers.get('X-User-Id')
             if not user_id:
                 return jsonify({"error": "Unauthorized"}), 401
-            
+
             user = User.query.get(int(user_id))
             if not user or not user.is_admin:
                 return jsonify({"error": "Admin access required"}), 403
-            
+
             return f(*args, **kwargs)
         wrapper.__name__ = f.__name__
         return wrapper
@@ -442,7 +442,7 @@ def get_all_users():
     try:
         users = User.query.all()
         users_data = []
-        
+
         for user in users:
             user_projects = []
             for project in user.projects:
@@ -451,7 +451,7 @@ def get_all_users():
                     Citation.project_id == project.id,
                     Citation.is_relevant.isnot(None)
                 ).count()
-                
+
                 user_projects.append({
                     "id": project.id,
                     "name": project.name,
@@ -462,7 +462,7 @@ def get_all_users():
                     "keywords": project.keywords,
                     "model_metrics": project.model_metrics
                 })
-            
+
             users_data.append({
                 "id": user.id,
                 "first_name": user.first_name,
@@ -473,12 +473,12 @@ def get_all_users():
                 "projects": user_projects,
                 "total_projects": len(user_projects)
             })
-        
+
         return jsonify({
             "users": users_data,
             "total_users": len(users_data)
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error fetching users: {str(e)}")
         return jsonify({"error": "Failed to fetch users"}), 500
@@ -492,7 +492,7 @@ def get_user_details(user_id):
         user = User.query.get(user_id)
         if not user:
             return jsonify({"error": "User not found"}), 404
-        
+
         projects = []
         for project in user.projects:
             citations = Citation.query.filter_by(project_id=project.id).all()
@@ -503,7 +503,7 @@ def get_user_details(user_id):
                 "is_relevant": c.is_relevant,
                 "iteration": c.iteration
             } for c in citations]
-            
+
             projects.append({
                 "id": project.id,
                 "name": project.name,
@@ -513,7 +513,7 @@ def get_user_details(user_id):
                 "model_metrics": project.model_metrics,
                 "citations": citations_data
             })
-        
+
         return jsonify({
             "user": {
                 "id": user.id,
@@ -525,7 +525,7 @@ def get_user_details(user_id):
                 "projects": projects
             }
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error fetching user details: {str(e)}")
         return jsonify({"error": "Failed to fetch user details"}), 500
@@ -538,10 +538,10 @@ def update_user(user_id):
     try:
         data = request.get_json()
         user = User.query.get(user_id)
-        
+
         if not user:
             return jsonify({"error": "User not found"}), 404
-        
+
         # Update user fields
         if 'first_name' in data:
             user.first_name = data['first_name']
@@ -557,9 +557,9 @@ def update_user(user_id):
             user.password = generate_password_hash(data['password'])
         if 'is_admin' in data:
             user.is_admin = data['is_admin']
-        
+
         db.session.commit()
-        
+
         return jsonify({
             "message": "User updated successfully",
             "user": {
@@ -570,7 +570,7 @@ def update_user(user_id):
                 "is_admin": user.is_admin
             }
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error updating user: {str(e)}")
         db.session.rollback()
@@ -584,24 +584,24 @@ def admin_reset_password(user_id):
     try:
         data = request.get_json()
         user = User.query.get(user_id)
-        
+
         if not user:
             return jsonify({"error": "User not found"}), 404
-        
+
         new_password = data.get('new_password')
         if not new_password or len(new_password) < 6:
             return jsonify({"error": "Password must be at least 6 characters"}), 400
-        
+
         user.password = generate_password_hash(new_password)
         db.session.commit()
-        
+
         app.logger.info(f"Admin reset password for user {user.email}")
-        
+
         return jsonify({
             "message": f"Password reset successfully for {user.email}",
             "new_password": new_password  # Only show in response for admin convenience
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error in admin password reset: {str(e)}")
         db.session.rollback()
@@ -616,21 +616,21 @@ def delete_user(user_id):
         user = User.query.get(user_id)
         if not user:
             return jsonify({"error": "User not found"}), 404
-        
+
         # Delete all citations for user's projects
         for project in user.projects:
             Citation.query.filter_by(project_id=project.id).delete()
-        
+
         # Delete all user's projects
         Project.query.filter_by(user_id=user_id).delete()
-        
+
         # Delete the user
         db.session.delete(user)
         db.session.commit()
-        
+
         app.logger.info(f"Admin deleted user {user_id} and all associated data")
         return jsonify({"message": "User and all associated data deleted successfully"})
-    
+
     except Exception as e:
         app.logger.error(f"Error deleting user: {str(e)}")
         db.session.rollback()
@@ -644,14 +644,14 @@ def get_all_projects():
     try:
         projects = Project.query.all()
         projects_data = []
-        
+
         for project in projects:
             citations_count = Citation.query.filter_by(project_id=project.id).count()
             labeled_count = Citation.query.filter(
                 Citation.project_id == project.id,
                 Citation.is_relevant.isnot(None)
             ).count()
-            
+
             projects_data.append({
                 "id": project.id,
                 "name": project.name,
@@ -665,12 +665,12 @@ def get_all_projects():
                 "keywords": project.keywords,
                 "model_metrics": project.model_metrics
             })
-        
+
         return jsonify({
             "projects": projects_data,
             "total_projects": len(projects_data)
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error fetching all projects: {str(e)}")
         return jsonify({"error": "Failed to fetch projects"}), 500
@@ -684,7 +684,7 @@ def get_project_details_admin(project_id):
         project = Project.query.get(project_id)
         if not project:
             return jsonify({"error": "Project not found"}), 404
-        
+
         citations = Citation.query.filter_by(project_id=project_id).all()
         citations_data = [{
             "id": c.id,
@@ -693,7 +693,7 @@ def get_project_details_admin(project_id):
             "is_relevant": c.is_relevant,
             "iteration": c.iteration
         } for c in citations]
-        
+
         return jsonify({
             "project": {
                 "id": project.id,
@@ -709,7 +709,7 @@ def get_project_details_admin(project_id):
                 "total_citations": len(citations_data)
             }
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error fetching project details: {str(e)}")
         return jsonify({"error": "Failed to fetch project details"}), 500
@@ -722,10 +722,10 @@ def update_project_admin(project_id):
     try:
         data = request.get_json()
         project = Project.query.get(project_id)
-        
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
-        
+
         # Update project fields
         if 'name' in data:
             project.name = data['name']
@@ -735,9 +735,9 @@ def update_project_admin(project_id):
             project.current_iteration = data['current_iteration']
         if 'model_metrics' in data:
             project.model_metrics = data['model_metrics']
-        
+
         db.session.commit()
-        
+
         return jsonify({
             "message": "Project updated successfully",
             "project": {
@@ -748,7 +748,7 @@ def update_project_admin(project_id):
                 "model_metrics": project.model_metrics
             }
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error updating project: {str(e)}")
         db.session.rollback()
@@ -763,20 +763,20 @@ def delete_project_admin(project_id):
         project = Project.query.get(project_id)
         if not project:
             return jsonify({"error": "Project not found"}), 404
-        
+
         app.logger.info(f"Admin deleting project {project_id}")
-        
+
         # Delete all citations first
         citations_deleted = Citation.query.filter_by(project_id=project_id).delete(synchronize_session=False)
         app.logger.info(f"Deleted {citations_deleted} citations for project {project_id}")
-        
+
         # Delete the project
         db.session.delete(project)
         db.session.commit()
-        
+
         app.logger.info(f"Successfully deleted project {project_id}")
         return jsonify({"message": "Project deleted successfully"}), 200
-        
+
     except Exception as e:
         app.logger.error(f"Error deleting project {project_id}: {str(e)}")
         db.session.rollback()
@@ -791,16 +791,16 @@ def create_admin():
         existing_admin = User.query.filter_by(is_admin=True).first()
         if existing_admin:
             return jsonify({"error": "Admin user already exists"}), 400
-        
+
         data = request.get_json()
         if not all(k in data for k in ["first_name", "last_name", "email", "password"]):
             return jsonify({"error": "Missing required fields"}), 400
-        
+
         # Check if user with this email already exists
         existing_user = User.query.filter_by(email=data['email']).first()
         if existing_user:
             return jsonify({"error": "Email already registered"}), 400
-        
+
         admin_user = User(
             first_name=data['first_name'],
             last_name=data['last_name'],
@@ -808,13 +808,13 @@ def create_admin():
             password=generate_password_hash(data['password']),
             is_admin=True
         )
-        
+
         db.session.add(admin_user)
         db.session.commit()
-        
+
         app.logger.info(f"First admin user created: {admin_user.email}")
         return jsonify({"message": "Admin user created successfully"}), 201
-    
+
     except Exception as e:
         app.logger.error(f"Error creating admin: {str(e)}")
         db.session.rollback()
@@ -831,7 +831,7 @@ def get_admin_stats():
         total_projects = Project.query.count()
         total_citations = Citation.query.count()
         labeled_citations = Citation.query.filter(Citation.is_relevant.isnot(None)).count()
-        
+
         return jsonify({
             "stats": {
                 "total_users": total_users,
@@ -843,7 +843,7 @@ def get_admin_stats():
                 "unlabeled_citations": total_citations - labeled_citations
             }
         })
-    
+
     except Exception as e:
         app.logger.error(f"Error fetching admin stats: {str(e)}")
         return jsonify({"error": "Failed to fetch statistics"}), 500
@@ -863,11 +863,11 @@ def send_reset_email(email, reset_token):
 
         # Create reset URL - use production URL if available, otherwise development URL
         frontend_url = os.getenv('FRONTEND_URL', 'https://alrt-shilpagopal1.replit.app')
-        
+
         # If in development mode (when DATABASE_URL contains localhost or is not set for production)
         if not os.getenv('DATABASE_URL') or 'localhost' in os.getenv('DATABASE_URL', ''):
             frontend_url = 'https://2a8d36cb-3602-46e2-82dc-3d70be763e17-00-1bnxhzpxbgva9.janeway.replit.dev'
-        
+
         reset_url = f"{frontend_url}/reset-password/{reset_token}"
 
         # Prepare email data
@@ -1078,12 +1078,12 @@ def get_projects():
 
     try:
         user_id_int = int(user_id)
-        
+
         # Check if user exists and get admin status
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-        
+
         # Admin sees all projects, regular users see only their own
         if user.is_admin:
             projects = Project.query.all()
@@ -1176,13 +1176,13 @@ def add_citations(project_id):
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin access to any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-            
+
         if not project:
             app.logger.error(f"Project {project_id} not found for user {user_id}")
             return jsonify({"error": "Project not found"}), 404
@@ -1271,11 +1271,35 @@ def add_citations(project_id):
                         "found_columns": list(df.columns)
                     }), 400
 
+                # Create citations from normalized DataFrame with text normalization
+
                 new_citations = []
                 for _, row in df.iterrows():
+                    # Normalize title: strip spaces, clean special characters, handle NaN
+                    title_raw = row['title']
+                    if pd.isna(title_raw) or str(title_raw).strip() == '':
+                        continue  # Skip citations with empty titles
+
+                    title_clean = str(title_raw).strip()
+                    # Remove excessive whitespace and normalize
+                    title_clean = re.sub(r'\s+', ' ', title_clean)
+
+                    # Normalize abstract: strip spaces, clean special characters, handle NaN
+                    abstract_raw = row['abstract']
+                    if pd.isna(abstract_raw):
+                        abstract_clean = ""
+                    else:
+                        abstract_clean = str(abstract_raw).strip()
+                        # Remove excessive whitespace and normalize
+                        abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
+
+                    # Skip citations with empty abstracts as they're not useful
+                    if abstract_clean == "":
+                        continue
+
                     citation = Citation(
-                        title=str(row['title']),
-                        abstract=str(row['abstract']),
+                        title=title_clean,
+                        abstract=abstract_clean,
                         project_id=project_id,
                         iteration=project.current_iteration
                     )
@@ -1318,13 +1342,13 @@ def update_citation(project_id, citation_id):
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin access to any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-            
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1369,13 +1393,13 @@ def train_model(project_id):
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin access to any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-            
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1389,21 +1413,21 @@ def train_model(project_id):
         # Filter out citations that would be excluded by keywords but keep user labels intact
         filtered_citations = []
         keyword_excluded_count = 0
-        
+
         for citation in user_labeled_citations:
             should_exclude = False
             text = f"{citation.title} {citation.abstract}".lower()
-            
+
             for exclude_kw in project.keywords.get('exclude', []):
                 word = exclude_kw['word'].lower()
                 frequency = exclude_kw.get('frequency', 1)
                 occurrences = text.count(word)
-                
+
                 if occurrences >= frequency:
                     should_exclude = True
                     keyword_excluded_count += 1
                     break
-            
+
             if not should_exclude:
                 filtered_citations.append(citation)
 
@@ -1467,13 +1491,13 @@ def get_keywords(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1510,13 +1534,13 @@ def update_keywords(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1550,13 +1574,13 @@ def filter_citations(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1572,10 +1596,10 @@ def filter_citations(project_id):
         query = query.filter_by(is_relevant=is_relevant)
 
     citations = query.all()
-    
+
     # Apply keyword filtering
     filtered_citations = apply_keyword_filtering(citations, project)
-    
+
     return jsonify({
         "citations": [{
             "id": c.id,
@@ -1601,13 +1625,13 @@ def download_results(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1676,13 +1700,13 @@ def predict_citations(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1706,13 +1730,13 @@ def get_iteration_info(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1732,18 +1756,18 @@ def get_project_details(project_id):
             return jsonify({"error": "Unauthorized"}), 401
 
         user_id_int = int(user_id)
-        
+
         # Check if user is admin
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin access to any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-            
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1756,7 +1780,7 @@ def get_project_details(project_id):
         # Apply keyword filtering to citations
         non_duplicate_citations = [c for c in citations if not getattr(c, 'is_duplicate', False)]
         filtered_citations = apply_keyword_filtering(non_duplicate_citations, project)
-        
+
         # Count labeled citations from filtered set
         filtered_labeled_count = sum(1 for c in filtered_citations if c.is_relevant is not None)
 
@@ -1802,13 +1826,13 @@ def delete_project(project_id):
         except ValueError:
             app.logger.error(f"Invalid user ID format: {user_id}")
             return jsonify({"error": "Invalid user ID"}), 401
-        
+
         # Check if user exists and get admin status
         user = User.query.get(user_id_int)
         if not user:
             app.logger.error(f"User {user_id_int} not found")
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin to delete any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
@@ -1816,7 +1840,7 @@ def delete_project(project_id):
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
             app.logger.info(f"Regular user {user_id_int} attempting to delete their project {project_id}")
-            
+
         if not project:
             app.logger.error(f"Project {project_id} not found or user {user_id_int} doesn't have access")
             return jsonify({"error": "Project not found or access denied"}), 404
@@ -1855,13 +1879,13 @@ def get_labeled_citations(project_id):
     user = User.query.get(user_id_int)
     if not user:
         return jsonify({"error": "User not found"}), 401
-        
+
     # Allow admin access to any project, regular users only their own
     if user.is_admin:
         project = Project.query.get(project_id)
     else:
         project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-        
+
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
@@ -1889,13 +1913,13 @@ def remove_duplicates(project_id):
         user = User.query.get(user_id_int)
         if not user:
             return jsonify({"error": "User not found"}), 401
-            
+
         # Allow admin access to any project, regular users only their own
         if user.is_admin:
             project = Project.query.get(project_id)
         else:
             project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
-            
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1935,7 +1959,7 @@ def remove_duplicates(project_id):
         # Mark duplicates instead of deleting them
         duplicates_marked = len(citations_to_remove)
         citation_ids_to_mark = [citations[i].id for i in range(len(citations)) if i not in kept_indices]
-        
+
         if citation_ids_to_mark:
             Citation.query.filter(Citation.id.in_(citation_ids_to_mark)).update(
                 {Citation.is_duplicate: True}, synchronize_session=False
