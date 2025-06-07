@@ -582,14 +582,24 @@ def update_user(user_id):
 def admin_reset_password(user_id):
     """Admin can reset any user's password"""
     try:
-        data = request.get_json()
-        user = User.query.get(user_id)
+        # Handle both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
 
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        user = User.query.get(user_id)
         if not user:
             return jsonify({"error": "User not found"}), 404
 
         new_password = data.get('new_password')
-        if not new_password or len(new_password) < 6:
+        if not new_password:
+            return jsonify({"error": "New password is required"}), 400
+        
+        if len(new_password) < 6:
             return jsonify({"error": "Password must be at least 6 characters"}), 400
 
         user.password = generate_password_hash(new_password)
@@ -605,7 +615,7 @@ def admin_reset_password(user_id):
     except Exception as e:
         app.logger.error(f"Error in admin password reset: {str(e)}")
         db.session.rollback()
-        return jsonify({"error": "Failed to reset password"}), 500
+        return jsonify({"error": "Failed to reset password", "details": str(e)}), 500
 
 
 @app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
