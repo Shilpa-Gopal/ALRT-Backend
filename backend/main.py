@@ -1238,12 +1238,11 @@ def add_citations(project_id):
                             "error": "Unsupported file format",
                             "details": f"File {file.filename} is not supported. Only .csv and .xlsx files are allowed"
                         }), 400
-
                     # Check file size limits for performance
-                    if len(df) > 10000:
+                    if len(df) > 50000:
                         return jsonify({
                             "error": "File too large",
-                            "details": f"File contains {len(df)} rows. Maximum supported is 10,000 rows for optimal performance."
+                            "details": f"File contains {len(df)} rows. Maximum supported is 50,000 rows for optimal performance."
                         }), 400
 
                     # Clean up temp file
@@ -1258,21 +1257,19 @@ def add_citations(project_id):
                 if df.empty:
                     return jsonify({"error": "File contains no data"}), 400
 
-                if 'title' not in df.columns or 'abstract' not in df.columns:
-                    return jsonify({
-                        "error": "File must contain 'title' and 'abstract' columns",
-                        "found_columns": list(df.columns)
-                    }), 400
+                # Normalize column names to lowercase for case-insensitive validation
+                original_columns = list(df.columns)
+                df.columns = df.columns.str.lower().str.strip()
 
-                # Create citations without duplicate processing
+                # Check for required columns (case-insensitive)
                 if 'title' not in df.columns or 'abstract' not in df.columns:
                     return jsonify({
-                        "error": "File must contain 'title' and 'abstract' columns",
-                        "found_columns": list(df.columns)
+                        "error": "File must contain 'title' and 'abstract' columns (case-insensitive)",
+                        "found_columns": original_columns,
+                        "normalized_columns": list(df.columns)
                     }), 400
 
                 # Create citations from normalized DataFrame with text normalization
-
                 new_citations = []
                 for _, row in df.iterrows():
                     # Normalize title: strip spaces, clean special characters, handle NaN
@@ -1671,6 +1668,7 @@ def download_results(project_id):
     # Sort by relevance score in descending order
     data_rows.sort(key=lambda x: x['relevance_score'], reverse=True)
 
+```python
     # Write sorted data
     for row, data in enumerate(data_rows, start=2):
         worksheet.cell(row=row, column=1, value=data['title'])
