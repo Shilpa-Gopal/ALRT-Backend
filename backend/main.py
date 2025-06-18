@@ -20,6 +20,23 @@ from sqlalchemy import text
 
 app = create_app()
 
+@app.route('/api/db-test', methods=['GET'])
+def test_database():
+    try:
+        with app.app_context():
+            result = db.session.execute(text('SELECT version();'))
+            version = result.fetchone()[0]
+            return jsonify({
+                "status": "success",
+                "message": "Database connection successful",
+                "postgresql_version": version
+            }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error", 
+            "message": str(e)
+        }), 500
+
 def normalize_text(text):
     """Normalize text for better matching"""
     if pd.isna(text):
