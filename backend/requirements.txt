@@ -12,3 +12,4 @@ Werkzeug==3.0.1
 requests==2.31.0
 python-dotenv==1.0.0
 setuptools>=68.0.0
+pyarrow==14.0.2
