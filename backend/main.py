@@ -352,6 +352,43 @@ with app.app_context():
     except Exception as e:
         app.logger.error(f"Migration error for is_duplicate: {str(e)}")
         db.session.rollback()
+    
+    # Migration: Add new project status fields
+    try:
+        # Check if new columns exist
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'project' AND column_name IN 
+            ('duplicates_removed', 'duplicates_count', 'keywords_selected', 'citations_count')
+        """)).fetchall()
+        
+        existing_columns = [row[0] for row in result]
+        
+        # Add missing columns
+        if 'duplicates_removed' not in existing_columns:
+            app.logger.info("Adding duplicates_removed column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN duplicates_removed BOOLEAN DEFAULT FALSE"))
+        
+        if 'duplicates_count' not in existing_columns:
+            app.logger.info("Adding duplicates_count column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN duplicates_count INTEGER DEFAULT 0"))
+        
+        if 'keywords_selected' not in existing_columns:
+            app.logger.info("Adding keywords_selected column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN keywords_selected BOOLEAN DEFAULT FALSE"))
+        
+        if 'citations_count' not in existing_columns:
+            app.logger.info("Adding citations_count column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN citations_count INTEGER DEFAULT 0"))
+        
+        db.session.commit()
+        app.logger.info("Migration completed: Project status fields added")
+        
+    except Exception as e:
+        app.logger.error(f"Migration error for project status fields: {str(e)}")
+        db.session.rollback()
+
 
 
 @app.route('/', methods=['GET'])
@@ -708,18 +745,36 @@ def get_all_projects():
 def get_project_details_admin(project_id):
     """Get detailed project information - Admin only"""
     try:
-        project = Project.query.get(project_id)
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+
         if not project:
             return jsonify({"error": "Project not found"}), 404
 
         citations = Citation.query.filter_by(project_id=project_id).all()
-        citations_data = [{
-            "id": c.id,
-            "title": c.title,
-            "abstract": c.abstract,
-            "is_relevant": c.is_relevant,
-            "iteration": c.iteration
-        } for c in citations]
+        labeled_count = Citation.query.filter(
+            Citation.project_id == project_id,
+            Citation.is_relevant.isnot(None)
+        ).count()
+
+        # Apply keyword filtering to citations
+        non_duplicate_citations = [c for c in citations if not getattr(c, 'is_duplicate', False)]
+        filtered_citations = apply_keyword_filtering(non_duplicate_citations, project)
+
+        # Count labeled citations from filtered set
+        filtered_labeled_count = sum(1 for c in filtered_citations if c.is_relevant is not None)
 
         return jsonify({
             "project": {
@@ -727,14 +782,28 @@ def get_project_details_admin(project_id):
                 "name": project.name,
                 "created_at": project.created_at,
                 "current_iteration": project.current_iteration,
-                "user_id": project.user_id,
-                "user_name": f"{project.user.first_name} {project.user.last_name}",
-                "user_email": project.user.email,
                 "keywords": project.keywords,
                 "model_metrics": project.model_metrics,
-                "citations": citations_data,
-                "total_citations": len(citations_data)
-            }
+                "citations_count": len(filtered_citations),
+                "labeled_count": filtered_labeled_count,
+                "total_uploaded": len(citations),
+                "duplicates_count": sum(1 for c in citations if getattr(c, 'is_duplicate', False)),
+                "keyword_filtered_count": len(non_duplicate_citations) - len(filtered_citations),
+                
+                # New status fields
+                "duplicates_removed": project.duplicates_removed,
+                "keywords_selected": project.keywords_selected,
+                "citations_count_stored": project.citations_count,
+                "duplicates_count_stored": project.duplicates_count
+            },
+            "citations": [{
+                "id": c.id,
+                "title": c.title,
+                "abstract": c.abstract,
+                "is_relevant": c.is_relevant,
+                "iteration": c.iteration,
+                "is_duplicate": getattr(c, 'is_duplicate', False)
+            } for c in filtered_citations]
         })
 
     except Exception as e:
@@ -1126,7 +1195,13 @@ def get_projects():
                 "created_at": p.created_at,
                 "current_iteration": p.current_iteration,
                 "user_id": p.user_id,
-                "owner_name": f"{p.user.first_name} {p.user.last_name}" if user.is_admin else None
+                "owner_name": f"{p.user.first_name} {p.user.last_name}" if user.is_admin else None,
+                
+                # New status fields
+                "duplicates_removed": p.duplicates_removed,
+                "duplicates_count": p.duplicates_count,
+                "keywords_selected": p.keywords_selected,
+                "citations_count": p.citations_count
             } for p in projects]
         })
     except Exception as e:
@@ -1329,13 +1404,24 @@ def add_citations(project_id):
                     )
                     new_citations.append(citation)
 
+                # Update project status after successful upload
+                project.citations_count = len(new_citations)
+                # Reset status flags when new citations are uploaded
+                project.duplicates_removed = False
+                project.keywords_selected = bool(project.keywords.get('include') or project.keywords.get('exclude'))
+                
                 db.session.bulk_save_objects(new_citations)
                 db.session.commit()
 
                 return jsonify({
                     "message": f"Added {len(new_citations)} citations",
                     "total_citations": len(new_citations),
-                    "note": "Use 'Detect and Remove Duplicates' button in keywords section to remove any duplicates"
+                    "note": "Use 'Detect and Remove Duplicates' button in keywords section to remove any duplicates",
+                    
+                    # Status information for frontend
+                    "citations_count": len(new_citations),
+                    "duplicates_removed": False,
+                    "keywords_selected": project.keywords_selected
                 }), 201
 
             except Exception as e:
@@ -1583,9 +1669,17 @@ def update_keywords(project_id):
             item['frequency'] = 1
 
     project.keywords = data
+    
+    # Update keywords_selected status
+    has_keywords = bool(data.get('include') or data.get('exclude'))
+    project.keywords_selected = has_keywords
+    
     db.session.commit()
 
-    return jsonify(project.keywords)
+    return jsonify({
+        "keywords": project.keywords,
+        "keywords_selected": project.keywords_selected
+    })
 
 
 @app.route('/api/projects/<int:project_id>/citations/filter', methods=['GET'])
@@ -1990,6 +2084,11 @@ def remove_duplicates(project_id):
                 {Citation.is_duplicate: True}, synchronize_session=False
             )
 
+        # Update project status
+        project.duplicates_removed = True
+        project.duplicates_count = duplicates_marked
+        project.citations_count = len(citations_to_keep)
+
         db.session.commit()
         app.logger.info(f"Marked {duplicates_marked} citations as duplicates in project {project_id}")
 
@@ -1999,7 +2098,12 @@ def remove_duplicates(project_id):
             "unique_citations": len(citations_to_keep),
             "removal_strategy": result['removal_strategy'],
             "duplicate_details": result['duplicate_details'][:10],  # Show first 10 examples
-            "processing_summary": result['processing_summary']
+            "processing_summary": result['processing_summary'],
+            
+            # Status fields for frontend
+            "duplicates_removed": True,
+            "duplicates_count": duplicates_marked,
+            "citations_count": len(citations_to_keep)
         }), 200
 
     except Exception as e:
@@ -2009,7 +2113,6 @@ def remove_duplicates(project_id):
             "error": "Failed to remove duplicates",
             "details": str(e)
         }), 500
-
 
 def process_advanced_duplicates(df):
     """Advanced duplicate processing with multiple strategies"""
