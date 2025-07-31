@@ -2374,7 +2374,7 @@ def calculate_advanced_completeness_score(row):
 
     return score
 
-def calculate_tfidf_similarity(df, duplicate_details):
+def new_calculate_tfidf_similarity(df, duplicate_details):
     """Calculate TF-IDF similarity and remove similar citations"""
 
     try:
@@ -2453,7 +2453,7 @@ def calculate_tfidf_similarity(df, duplicate_details):
             'comparisons_made': 0
         }
 
-def old_calculate_tfidf_similarity(df, duplicate_details):
+def calculate_tfidf_similarity(df, duplicate_details):
     """Calculate TF-IDF similarity and remove similar citations"""
 
     try:
