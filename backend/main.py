@@ -2374,7 +2374,7 @@ def calculate_advanced_completeness_score(row):
 
     return score
 
-def new_calculate_tfidf_similarity(df, duplicate_details):
+def calculate_tfidf_similarity(df, duplicate_details):
     """Calculate TF-IDF similarity and remove similar citations"""
 
     try:
@@ -2453,80 +2453,6 @@ def new_calculate_tfidf_similarity(df, duplicate_details):
             'comparisons_made': 0
         }
 
-def calculate_tfidf_similarity(df, duplicate_details):
-    """Calculate TF-IDF similarity and remove similar citations"""
-
-    try:
-        # Prepare text for TF-IDF analysis
-        texts = []
-        for _, row in df.iterrows():
-            text = f"{normalize_text(row['title'])} {normalize_text(row['abstract'])}"
-            texts.append(text)
-
-        if len(texts) < 2:
-            return {'success': True, 'kept_indices': df['index'].tolist(), 'comparisons_made': 0}
-
-        # Calculate TF-IDF vectors
-        vectorizer = TfidfVectorizer(
-            max_features=1000, 
-            stop_words='english', 
-            ngram_range=(1, 2),
-            min_df=1,
-            max_df=0.95
-        )
-
-        tfidf_matrix = vectorizer.fit_transform(texts)
-        similarity_matrix = cosine_similarity(tfidf_matrix)
-
-        # Find similar pairs using higher threshold (75% similarity)
-        similarity_threshold = 0.75
-        to_remove = set()
-        comparisons_made = 0
-
-        for i in range(len(similarity_matrix)):
-            for j in range(i + 1, len(similarity_matrix)):
-                comparisons_made += 1
-                similarity_score = similarity_matrix[i][j]
-
-                if similarity_score > similarity_threshold:
-                    row_i = df.iloc[i]
-                    row_j = df.iloc[j]
-
-                    # Decide which one to keep based on multiple criteria
-                    keep_i = should_keep_citation_i(row_i, row_j)
-
-                    if keep_i:
-                        to_remove.add(j)
-                        duplicate_details.append({
-                            'kept': f"{row_i['title'][:50]}...",
-                            'removed': f"{row_j['title'][:50]}...",
-                            'reason': f'TF-IDF similarity: {similarity_score:.3f} (threshold: {similarity_threshold})'
-                        })
-                    else:
-                        to_remove.add(i)
-                        duplicate_details.append({
-                            'kept': f"{row_j['title'][:50]}...",
-                            'removed': f"{row_i['title'][:50]}...",
-                            'reason': f'TF-IDF similarity: {similarity_score:.3f} (threshold: {similarity_threshold})'
-                        })
-
-        # Return indices of citations to keep
-        kept_indices = [df.iloc[i]['index'] for i in range(len(df)) if i not in to_remove]
-
-        return {
-            'success': True,
-            'kept_indices': kept_indices,
-            'comparisons_made': comparisons_made
-        }
-
-    except Exception as e:
-        app.logger.warning(f"TF-IDF similarity calculation failed: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e),
-            'kept_indices': df['index'].tolist(),
-            'comparisons_made': 0
-        }
 
 
 def should_keep_citation_i(citation_i, citation_j):
