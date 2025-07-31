@@ -325,10 +325,10 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
         app.logger.warning(f"TF-IDF similarity calculation failed: {e}")
         return citations_list
     
+
 def create_enhanced_duplicate_detail(kept_citation, removed_citation, reason, similarity_score=None):
     """Create enhanced duplicate detail with full information"""
     
-    # Helper function to convert numpy types to Python types
     def convert_numpy_types(value):
         if pd.isna(value):
             return None
@@ -336,30 +336,36 @@ def create_enhanced_duplicate_detail(kept_citation, removed_citation, reason, si
             return value.item()
         return value
     
+    def get_val(citation, key):
+        return convert_numpy_types(citation[key]) if key in citation else None
+    
     detail = {
-        # Full citation information
         'kept': {
-            'id': int(convert_numpy_types(kept_citation['id'])),  # Convert numpy int64 to Python int
+            'id': int(convert_numpy_types(kept_citation['id'])),
             'title': str(kept_citation['title']),
-            'abstract': str(kept_citation['abstract'])[:200] + '...' if len(str(kept_citation['abstract'])) > 200 else str(kept_citation['abstract']),
-            'is_relevant': convert_numpy_types(kept_citation.get('is_relevant')),
-            'iteration': int(convert_numpy_types(kept_citation.get('iteration', 0)))
+            'abstract': (str(kept_citation['abstract'])[:200] + '...'
+                         if len(str(kept_citation['abstract'])) > 200
+                         else str(kept_citation['abstract'])),
+            'is_relevant': get_val(kept_citation, 'is_relevant'),
+            'iteration': int(get_val(kept_citation, 'iteration') or 0)
         },
         'removed': {
-            'id': int(convert_numpy_types(removed_citation['id'])),  # Convert numpy int64 to Python int
+            'id': int(convert_numpy_types(removed_citation['id'])),
             'title': str(removed_citation['title']),
-            'abstract': str(removed_citation['abstract'])[:200] + '...' if len(str(removed_citation['abstract'])) > 200 else str(removed_citation['abstract']),
-            'is_relevant': convert_numpy_types(removed_citation.get('is_relevant')),
-            'iteration': int(convert_numpy_types(removed_citation.get('iteration', 0)))
+            'abstract': (str(removed_citation['abstract'])[:200] + '...'
+                         if len(str(removed_citation['abstract'])) > 200
+                         else str(removed_citation['abstract'])),
+            'is_relevant': get_val(removed_citation, 'is_relevant'),
+            'iteration': int(get_val(removed_citation, 'iteration') or 0)
         },
-        # Duplicate detection info
         'reason': str(reason),
         'similarity_score': float(similarity_score) if similarity_score is not None else None,
-        'detection_method': 'tfidf' if similarity_score else 'exact_match',
-        'timestamp': datetime.now(datetime.timezone.utc).isoformat()  # Fix deprecated datetime.utcnow()
+        'detection_method': 'tfidf' if similarity_score is not None else 'exact_match',
+        'timestamp': datetime.now(timezone.utc).isoformat()
     }
     
     return detail
+
 
 CORS(app, resources={r"/api/*": {
     "origins": "*",
@@ -2393,7 +2399,7 @@ def calculate_tfidf_similarity(df, duplicate_details):
             stop_words='english', 
             ngram_range=(1, 2),
             min_df=1,
-            max_df=0.95
+            max_df=0.75
         )
 
         tfidf_matrix = vectorizer.fit_transform(texts)
