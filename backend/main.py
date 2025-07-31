@@ -15,10 +15,30 @@ from app.ml_system import LiteratureReviewSystem
 import hashlib
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import text
 
 app = create_app()
+
+import json
+import numpy as np
+
+def make_json_serializable(obj):
+    """Convert numpy types to JSON serializable Python types"""
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif pd.isna(obj):
+        return None
+    else:
+        return obj
 
 @app.route('/api/db-test', methods=['GET'])
 def test_database():
@@ -308,27 +328,35 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
 def create_enhanced_duplicate_detail(kept_citation, removed_citation, reason, similarity_score=None):
     """Create enhanced duplicate detail with full information"""
     
+    # Helper function to convert numpy types to Python types
+    def convert_numpy_types(value):
+        if pd.isna(value):
+            return None
+        if hasattr(value, 'item'):  # numpy scalar
+            return value.item()
+        return value
+    
     detail = {
         # Full citation information
         'kept': {
-            'id': int(kept_citation['id']),
+            'id': int(convert_numpy_types(kept_citation['id'])),  # Convert numpy int64 to Python int
             'title': str(kept_citation['title']),
             'abstract': str(kept_citation['abstract'])[:200] + '...' if len(str(kept_citation['abstract'])) > 200 else str(kept_citation['abstract']),
-            'is_relevant': kept_citation.get('is_relevant'),
-            'iteration': kept_citation.get('iteration', 0)
+            'is_relevant': convert_numpy_types(kept_citation.get('is_relevant')),
+            'iteration': int(convert_numpy_types(kept_citation.get('iteration', 0)))
         },
         'removed': {
-            'id': int(removed_citation['id']),
+            'id': int(convert_numpy_types(removed_citation['id'])),  # Convert numpy int64 to Python int
             'title': str(removed_citation['title']),
             'abstract': str(removed_citation['abstract'])[:200] + '...' if len(str(removed_citation['abstract'])) > 200 else str(removed_citation['abstract']),
-            'is_relevant': removed_citation.get('is_relevant'),
-            'iteration': removed_citation.get('iteration', 0)
+            'is_relevant': convert_numpy_types(removed_citation.get('is_relevant')),
+            'iteration': int(convert_numpy_types(removed_citation.get('iteration', 0)))
         },
         # Duplicate detection info
-        'reason': reason,
-        'similarity_score': similarity_score,
+        'reason': str(reason),
+        'similarity_score': float(similarity_score) if similarity_score is not None else None,
         'detection_method': 'tfidf' if similarity_score else 'exact_match',
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(datetime.timezone.utc).isoformat()  # Fix deprecated datetime.utcnow()
     }
     
     return detail
@@ -2164,8 +2192,9 @@ def remove_duplicates(project_id):
         project.citations_count = len(citations_to_keep)
         
         # Store ALL duplicate details (not just first 10)
-        project.duplicate_details = result['duplicate_details']  # Store all details
-        project.processing_summary = result['processing_summary']
+        # Convert numpy types to JSON serializable types before storing
+        project.duplicate_details = make_json_serializable(result['duplicate_details'])
+        project.processing_summary = make_json_serializable(result['processing_summary'])
         project.removal_strategy = result['removal_strategy']
 
         db.session.commit()
