@@ -1,4 +1,3 @@
-
 from . import db
 from datetime import datetime
 
@@ -21,11 +20,16 @@ class Project(db.Model):
     keywords = db.Column(db.JSON, default=lambda: {"include": [], "exclude": []})
     model_metrics = db.Column(db.JSON, default=dict)
     
-    # New fields for duplicate removal flow
+    # Existing status fields
     duplicates_removed = db.Column(db.Boolean, default=False)
     duplicates_count = db.Column(db.Integer, default=0)
     keywords_selected = db.Column(db.Boolean, default=False)
     citations_count = db.Column(db.Integer, default=0)
+    
+    # NEW: Duplicate removal details storage
+    duplicate_details = db.Column(db.JSON, default=list)
+    processing_summary = db.Column(db.JSON, default=dict)
+    removal_strategy = db.Column(db.String(500), nullable=True)
 
 class Citation(db.Model):
     id = db.Column(db.Integer, primary_key=True)

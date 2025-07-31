@@ -388,6 +388,39 @@ with app.app_context():
     except Exception as e:
         app.logger.error(f"Migration error for project status fields: {str(e)}")
         db.session.rollback()
+        
+    # Migration: Add duplicate details storage fields
+    try:
+        # Check if new duplicate storage columns exist
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'project' AND column_name IN 
+            ('duplicate_details', 'processing_summary', 'removal_strategy')
+        """)).fetchall()
+        
+        existing_columns = [row[0] for row in result]
+        
+        # Add missing columns
+        if 'duplicate_details' not in existing_columns:
+            app.logger.info("Adding duplicate_details column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN duplicate_details JSON DEFAULT '[]'"))
+        
+        if 'processing_summary' not in existing_columns:
+            app.logger.info("Adding processing_summary column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN processing_summary JSON DEFAULT '{}'"))
+        
+        if 'removal_strategy' not in existing_columns:
+            app.logger.info("Adding removal_strategy column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN removal_strategy VARCHAR(500)"))
+        
+        db.session.commit()
+        app.logger.info("Migration completed: Duplicate details storage fields added")
+        
+    except Exception as e:
+        app.logger.error(f"Migration error for duplicate details storage: {str(e)}")
+        db.session.rollback()
+
 
 
 
@@ -1166,6 +1199,7 @@ def verify_reset_token():
         return jsonify({"valid": False, "error": "Failed to verify token"}), 500
 
 
+# Update your existing get_projects function
 @app.route('/api/projects', methods=['GET'])
 def get_projects():
     user_id = request.headers.get('X-User-Id')
@@ -1915,7 +1949,18 @@ def get_project_details(project_id):
                 "labeled_count": filtered_labeled_count,
                 "total_uploaded": len(citations),
                 "duplicates_count": sum(1 for c in citations if getattr(c, 'is_duplicate', False)),
-                "keyword_filtered_count": len(non_duplicate_citations) - len(filtered_citations)
+                "keyword_filtered_count": len(non_duplicate_citations) - len(filtered_citations),
+                
+                # Existing status fields
+                "duplicates_removed": project.duplicates_removed,
+                "keywords_selected": project.keywords_selected,
+                "citations_count_stored": project.citations_count,
+                "duplicates_count_stored": project.duplicates_count,
+                
+                # NEW: Duplicate details fields
+                "duplicate_details": project.duplicate_details or [],
+                "processing_summary": project.processing_summary or {},
+                "removal_strategy": project.removal_strategy
             },
             "citations": [{
                 "id": c.id,
@@ -2084,10 +2129,15 @@ def remove_duplicates(project_id):
                 {Citation.is_duplicate: True}, synchronize_session=False
             )
 
-        # Update project status
+        # NEW: Store duplicate details in project record
         project.duplicates_removed = True
         project.duplicates_count = duplicates_marked
         project.citations_count = len(citations_to_keep)
+        
+        # Store ALL duplicate details (not just first 10)
+        project.duplicate_details = result['duplicate_details']  # Store all details
+        project.processing_summary = result['processing_summary']
+        project.removal_strategy = result['removal_strategy']
 
         db.session.commit()
         app.logger.info(f"Marked {duplicates_marked} citations as duplicates in project {project_id}")
@@ -2097,7 +2147,7 @@ def remove_duplicates(project_id):
             "duplicates_marked": duplicates_marked,
             "unique_citations": len(citations_to_keep),
             "removal_strategy": result['removal_strategy'],
-            "duplicate_details": result['duplicate_details'][:10],  # Show first 10 examples
+            "duplicate_details": result['duplicate_details'][:10],  # Still return first 10 in response
             "processing_summary": result['processing_summary'],
             
             # Status fields for frontend
