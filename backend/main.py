@@ -304,6 +304,35 @@ def remove_similar_citations(citations_list, authors_col, duplicate_details):
     except Exception as e:
         app.logger.warning(f"TF-IDF similarity calculation failed: {e}")
         return citations_list
+    
+def create_enhanced_duplicate_detail(kept_citation, removed_citation, reason, similarity_score=None):
+    """Create enhanced duplicate detail with full information"""
+    
+    detail = {
+        # Full citation information
+        'kept': {
+            'id': int(kept_citation['id']),
+            'title': str(kept_citation['title']),
+            'abstract': str(kept_citation['abstract'])[:200] + '...' if len(str(kept_citation['abstract'])) > 200 else str(kept_citation['abstract']),
+            'is_relevant': kept_citation.get('is_relevant'),
+            'iteration': kept_citation.get('iteration', 0)
+        },
+        'removed': {
+            'id': int(removed_citation['id']),
+            'title': str(removed_citation['title']),
+            'abstract': str(removed_citation['abstract'])[:200] + '...' if len(str(removed_citation['abstract'])) > 200 else str(removed_citation['abstract']),
+            'is_relevant': removed_citation.get('is_relevant'),
+            'iteration': removed_citation.get('iteration', 0)
+        },
+        # Duplicate detection info
+        'reason': reason,
+        'similarity_score': similarity_score,
+        'detection_method': 'tfidf' if similarity_score else 'exact_match',
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    
+    return detail
+
 CORS(app, resources={r"/api/*": {
     "origins": "*",
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -2255,14 +2284,14 @@ def select_best_citation_advanced(group, duplicate_details):
         else:
             best = labeled_citations.iloc[0]
 
-        # Log the selection reason
+        # Log the selection reason with ENHANCED format
         for _, other in group.iterrows():
             if other['index'] != best['index']:
-                duplicate_details.append({
-                    'kept': f"{best['title'][:50]}...",
-                    'removed': f"{other['title'][:50]}...",
-                    'reason': f'Prioritized labeled citation (relevance: {best["is_relevant"]})'
-                })
+                detail = create_enhanced_duplicate_detail(
+                    best, other, 
+                    f'Prioritized labeled citation (relevance: {best["is_relevant"]})'
+                )
+                duplicate_details.append(detail)
         return best
 
     # Strategy 2: Use completeness score (abstract length, title quality)
@@ -2270,14 +2299,14 @@ def select_best_citation_advanced(group, duplicate_details):
     group_copy['completeness_score'] = group_copy.apply(calculate_advanced_completeness_score, axis=1)
     best = group_copy.loc[group_copy['completeness_score'].idxmax()]
 
-    # Log the selection reason
+    # Log the selection reason with ENHANCED format
     for _, other in group.iterrows():
         if other['index'] != best['index']:
-            duplicate_details.append({
-                'kept': f"{best['title'][:50]}...",
-                'removed': f"{other['title'][:50]}...",
-                'reason': f'Higher completeness score ({best["completeness_score"]:.2f})'
-            })
+            detail = create_enhanced_duplicate_detail(
+                best, other,
+                f'Higher completeness score ({best.get("completeness_score", 0):.2f})'
+            )
+            duplicate_details.append(detail)
 
     return best
 
@@ -2316,8 +2345,86 @@ def calculate_advanced_completeness_score(row):
 
     return score
 
-
 def calculate_tfidf_similarity(df, duplicate_details):
+    """Calculate TF-IDF similarity and remove similar citations"""
+
+    try:
+        # Prepare text for TF-IDF analysis
+        texts = []
+        for _, row in df.iterrows():
+            text = f"{normalize_text(row['title'])} {normalize_text(row['abstract'])}"
+            texts.append(text)
+
+        if len(texts) < 2:
+            return {'success': True, 'kept_indices': df['index'].tolist(), 'comparisons_made': 0}
+
+        # Calculate TF-IDF vectors
+        vectorizer = TfidfVectorizer(
+            max_features=1000, 
+            stop_words='english', 
+            ngram_range=(1, 2),
+            min_df=1,
+            max_df=0.95
+        )
+
+        tfidf_matrix = vectorizer.fit_transform(texts)
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+
+        # Find similar pairs using higher threshold (75% similarity)
+        similarity_threshold = 0.75
+        to_remove = set()
+        comparisons_made = 0
+
+        for i in range(len(similarity_matrix)):
+            for j in range(i + 1, len(similarity_matrix)):
+                comparisons_made += 1
+                similarity_score = similarity_matrix[i][j]
+
+                if similarity_score > similarity_threshold:
+                    row_i = df.iloc[i]
+                    row_j = df.iloc[j]
+
+                    # Decide which one to keep based on multiple criteria
+                    keep_i = should_keep_citation_i(row_i, row_j)
+
+                    if keep_i:
+                        to_remove.add(j)
+                        # Use ENHANCED format with full information
+                        detail = create_enhanced_duplicate_detail(
+                            row_i, row_j,
+                            f'TF-IDF similarity above threshold',
+                            similarity_score
+                        )
+                        duplicate_details.append(detail)
+                    else:
+                        to_remove.add(i)
+                        # Use ENHANCED format with full information
+                        detail = create_enhanced_duplicate_detail(
+                            row_j, row_i,
+                            f'TF-IDF similarity above threshold',
+                            similarity_score
+                        )
+                        duplicate_details.append(detail)
+
+        # Return indices of citations to keep
+        kept_indices = [df.iloc[i]['index'] for i in range(len(df)) if i not in to_remove]
+
+        return {
+            'success': True,
+            'kept_indices': kept_indices,
+            'comparisons_made': comparisons_made
+        }
+
+    except Exception as e:
+        app.logger.warning(f"TF-IDF similarity calculation failed: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
+            'kept_indices': df['index'].tolist(),
+            'comparisons_made': 0
+        }
+
+def old_calculate_tfidf_similarity(df, duplicate_details):
     """Calculate TF-IDF similarity and remove similar citations"""
 
     try:
