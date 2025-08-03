@@ -2046,10 +2046,14 @@ def filter_citations(project_id):
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
+    # Get query parameters
     iteration = request.args.get('iteration', type=int)
-    is_relevant = request.args.get('is_relevant',
-                                   type=lambda v: v.lower() == 'true'
-                                   if v else None)
+    is_relevant = request.args.get('is_relevant', type=lambda v: v.lower() == 'true' if v else None)
+    sort_order = request.args.get('sort_order', 'desc')  # NEW: desc (default) or asc
+    
+    # Validate sort_order parameter
+    if sort_order not in ['asc', 'desc']:
+        sort_order = 'desc'
 
     query = Citation.query.filter_by(project_id=project_id, is_duplicate=False)
     if iteration is not None:
@@ -2062,19 +2066,69 @@ def filter_citations(project_id):
     # Apply keyword filtering
     filtered_citations = apply_keyword_filtering(citations, project)
 
+    # NEW: Get relevance scores and sort accordingly
+    if filtered_citations:
+        try:
+            review_system = LiteratureReviewSystem(project_id)
+            predictions = review_system.predict_relevance([{
+                'title': c.title,
+                'abstract': c.abstract
+            } for c in filtered_citations])
+
+            # Combine citations with their relevance scores
+            citations_with_scores = []
+            for citation, prediction in zip(filtered_citations, predictions):
+                relevance_score = prediction.get('relevance_probability', 0) if 'error' not in prediction else 0
+                citations_with_scores.append({
+                    'citation': citation,
+                    'relevance_score': relevance_score
+                })
+
+            # Sort based on sort_order parameter
+            reverse_sort = (sort_order == 'desc')
+            citations_with_scores.sort(key=lambda x: x['relevance_score'], reverse=reverse_sort)
+            
+            # Extract sorted citations
+            sorted_citations = [item['citation'] for item in citations_with_scores]
+            
+            # Prepare response with scores included
+            citations_response = []
+            for item in citations_with_scores:
+                citation = item['citation']
+                citations_response.append({
+                    "id": citation.id,
+                    "title": citation.title,
+                    "abstract": citation.abstract,
+                    "is_relevant": citation.is_relevant,
+                    "iteration": citation.iteration,
+                    "is_duplicate": getattr(citation, 'is_duplicate', False),
+                    "relevance_score": round(item['relevance_score'], 4)  # Include score in response
+                })
+
+        except Exception as e:
+            app.logger.warning(f"Could not calculate relevance scores: {str(e)}")
+            # Fallback to original citations without scores
+            citations_response = [{
+                "id": c.id,
+                "title": c.title,
+                "abstract": c.abstract,
+                "is_relevant": c.is_relevant,
+                "iteration": c.iteration,
+                "is_duplicate": getattr(c, 'is_duplicate', False),
+                "relevance_score": None
+            } for c in filtered_citations]
+    else:
+        citations_response = []
+
     return jsonify({
-        "citations": [{
-            "id": c.id,
-            "title": c.title,
-            "abstract": c.abstract,
-            "is_relevant": c.is_relevant,
-            "iteration": c.iteration,
-            "is_duplicate": getattr(c, 'is_duplicate', False)
-        } for c in filtered_citations],
+        "citations": citations_response,
         "total_before_filtering": len(citations),
         "total_after_filtering": len(filtered_citations),
-        "filtered_by_keywords": len(citations) - len(filtered_citations)
+        "filtered_by_keywords": len(citations) - len(filtered_citations),
+        "sort_order": sort_order,  # NEW: Include current sort order in response
+        "sort_available": len(citations_response) > 0 and citations_response[0].get('relevance_score') is not None
     })
+
 
 
 @app.route('/api/projects/<int:project_id>/download', methods=['GET'])
@@ -2096,6 +2150,11 @@ def download_results(project_id):
 
     if not project:
         return jsonify({"error": "Project not found"}), 404
+
+    # NEW: Get sort_order parameter
+    sort_order = request.args.get('sort_order', 'desc')
+    if sort_order not in ['asc', 'desc']:
+        sort_order = 'desc'
 
     citations = Citation.query.filter_by(project_id=project_id).all()
 
@@ -2130,9 +2189,9 @@ def download_results(project_id):
             'relevance_score': relevance_score
         })
 
-    # Sort by relevance score in descending order
-    data_rows.sort(key=lambda x: x['relevance_score'], reverse=True)
-
+    # NEW: Sort by relevance score based on sort_order parameter
+    reverse_sort = (sort_order == 'desc')
+    data_rows.sort(key=lambda x: x['relevance_score'], reverse=reverse_sort)
 
     # Write sorted data
     for row, data in enumerate(data_rows, start=2):
@@ -2147,10 +2206,44 @@ def download_results(project_id):
 
     return send_file(
         output,
-        mimetype=
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
-        download_name=f'project_{project_id}_results.xlsx')
+        download_name=f'project_{project_id}_results_{sort_order}.xlsx')
+
+#  Add a new endpoint to get current sort capabilities
+@app.route('/api/projects/<int:project_id>/sort-info', methods=['GET'])
+def get_sort_info(project_id):
+    """Get information about sorting capabilities for this project"""
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Check if model is trained (has metrics for any iteration)
+    has_trained_model = bool(project.model_metrics)
+    
+    return jsonify({
+        "sort_available": has_trained_model,
+        "current_iteration": project.current_iteration,
+        "model_trained": has_trained_model,
+        "sort_options": [
+            {"value": "desc", "label": "High to Low Relevance (Default)", "description": "Best for finding obviously irrelevant papers"},
+            {"value": "asc", "label": "Low to High Relevance", "description": "Best for finding unexpectedly relevant papers"}
+        ]
+    })
 
 
 @app.route('/api/projects/<int:project_id>/predict', methods=['POST'])
