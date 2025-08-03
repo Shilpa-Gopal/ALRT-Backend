@@ -1261,6 +1261,183 @@ def verify_reset_token():
         app.logger.error(f"Verify reset token error: {str(e)}")
         return jsonify({"valid": False, "error": "Failed to verify token"}), 500
 
+# for acception of multiple files from users
+def validate_file_format(filename):
+    """Validate if file format is supported"""
+    return filename.lower().endswith(('.csv', '.xlsx', '.xls'))
+
+def process_single_file(file, temp_dir):
+    """Process a single file and return DataFrame"""
+    try:
+        filename = secure_filename(file.filename)
+        temp_path = os.path.join(temp_dir, filename)
+        file.save(temp_path)
+        
+        app.logger.info(f"Processing file: {filename}")
+        
+        if filename.endswith('.csv'):
+            df = pd.read_csv(temp_path)
+        elif filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(temp_path, engine='openpyxl')
+        else:
+            raise ValueError(f"Unsupported file format: {filename}")
+        
+        # Add source file info
+        df['source_file'] = filename
+        
+        # Normalize column names
+        df.columns = df.columns.str.lower().str.strip()
+        
+        # Check required columns
+        if 'title' not in df.columns or 'abstract' not in df.columns:
+            raise ValueError(f"File {filename} must contain 'title' and 'abstract' columns")
+        
+        return df, None
+        
+    except Exception as e:
+        return None, str(e)
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+def merge_multiple_files(files):
+    """Process and merge multiple files into a single DataFrame"""
+    app.logger.info(f"Processing {len(files)} files for merging")
+    
+    all_dataframes = []
+    processing_errors = []
+    file_summaries = []
+    
+    # Create temporary directory
+    temp_dir = '/tmp/multi_upload'
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        for file in files:
+            if not file or file.filename == '':
+                continue
+                
+            if not validate_file_format(file.filename):
+                processing_errors.append(f"Invalid format: {file.filename}")
+                continue
+            
+            df, error = process_single_file(file, temp_dir)
+            
+            if error:
+                processing_errors.append(f"Error in {file.filename}: {error}")
+                continue
+            
+            if df is not None and not df.empty:
+                all_dataframes.append(df)
+                file_summaries.append({
+                    'filename': file.filename,
+                    'rows': len(df),
+                    'columns': list(df.columns)
+                })
+                app.logger.info(f"Successfully processed {file.filename}: {len(df)} rows")
+        
+        if not all_dataframes:
+            return None, "No valid files processed", []
+        
+        # Merge all DataFrames
+        merged_df = pd.concat(all_dataframes, ignore_index=True, sort=False)
+        
+        # Standardize columns - ensure title and abstract exist
+        required_columns = ['title', 'abstract']
+        for col in required_columns:
+            if col not in merged_df.columns:
+                raise ValueError(f"Missing required column '{col}' after merging")
+        
+        # Handle optional columns
+        optional_mappings = {
+            'date': ['date', 'publication_date', 'pub_date', 'year', 'published_year'],
+            'authors': ['authors', 'author', 'author_names', 'researchers'],
+            'journal': ['journal', 'publication', 'venue', 'source'],
+            'doi': ['doi', 'digital_object_identifier'],
+            'keywords': ['keywords', 'key_words', 'tags']
+        }
+        
+        # Standardize optional columns
+        for standard_name, possible_names in optional_mappings.items():
+            found_col = None
+            for possible_name in possible_names:
+                if possible_name in merged_df.columns:
+                    found_col = possible_name
+                    break
+            
+            if found_col and found_col != standard_name:
+                merged_df[standard_name] = merged_df[found_col]
+        
+        app.logger.info(f"Merged {len(all_dataframes)} files into {len(merged_df)} total citations")
+        
+        return merged_df, None, {
+            'files_processed': len(all_dataframes),
+            'total_files': len(files),
+            'total_citations': len(merged_df),
+            'processing_errors': processing_errors,
+            'file_summaries': file_summaries
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Error merging files: {str(e)}")
+        return None, str(e), []
+    
+    finally:
+        # Clean up temp directory
+        if os.path.exists(temp_dir):
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+def create_citations_from_merged_data(df, project_id, current_iteration):
+    """Create Citation objects from merged DataFrame"""
+    new_citations = []
+    skipped_count = 0
+    
+    for _, row in df.iterrows():
+        # Validate and clean title
+        title_raw = row.get('title')
+        if pd.isna(title_raw) or str(title_raw).strip() == '':
+            skipped_count += 1
+            continue
+        
+        title_clean = str(title_raw).strip()
+        title_clean = re.sub(r'\s+', ' ', title_clean)
+        
+        # Validate and clean abstract
+        abstract_raw = row.get('abstract')
+        if pd.isna(abstract_raw) or str(abstract_raw).strip() == '':
+            skipped_count += 1
+            continue
+        
+        abstract_clean = str(abstract_raw).strip()
+        abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
+        
+        # Create citation with additional metadata
+        citation_data = {
+            'title': title_clean,
+            'abstract': abstract_clean,
+            'project_id': project_id,
+            'iteration': current_iteration
+        }
+        
+        # Add optional fields as JSON metadata if they exist
+        metadata = {}
+        optional_fields = ['date', 'authors', 'journal', 'doi', 'keywords', 'source_file']
+        for field in optional_fields:
+            if field in row and pd.notna(row[field]):
+                metadata[field] = str(row[field]).strip()
+        
+        citation = Citation(**citation_data)
+        
+        # Store metadata in a way that doesn't break existing schema
+        # You might want to add a metadata JSON column to Citation model
+        # For now, we'll just use the core fields
+        new_citations.append(citation)
+    
+    return new_citations, skipped_count
+
+
 
 # Update your existing get_projects function
 @app.route('/api/projects', methods=['GET'])
@@ -1311,52 +1488,122 @@ def create_project():
     try:
         app.logger.info("Received project creation request")
         app.logger.info(f"Headers: {dict(request.headers)}")
+        app.logger.info(f"Files: {list(request.files.keys())}")
+        app.logger.info(f"Form data: {dict(request.form)}")
 
         user_id = request.headers.get('X-User-Id')
         if not user_id:
             app.logger.error("No user ID in request headers")
             return jsonify({"error": "Unauthorized"}), 401
 
-        data = request.get_json()
-        app.logger.info(f"Request data: {data}")
-
-        if not data:
-            app.logger.error("No JSON data received")
-            return jsonify({"error": "No data provided"}), 400
-
-        if 'name' not in data:
-            app.logger.error("No project name in request data")
-            return jsonify({"error": "Project name is required"}), 400
-
         user_id_int = int(user_id)
-        project = Project(name=data['name'],
-                        user_id=user_id_int,
-                        keywords={
-                            "include": [],
-                            "exclude": []
-                        })
-        db.session.add(project)
-        db.session.commit()
-        db.session.refresh(project)
 
-        app.logger.info(f"Project created successfully with ID: {project.id}")
-        return jsonify({
-            "project": {
-                "id": project.id,
-                "name": project.name,
-                "created_at": project.created_at,
-                "current_iteration": project.current_iteration
-            }
-        }), 201
+        # Check if this is a multi-file upload request
+        if request.files:
+            # Multi-file upload with project creation
+            project_name = request.form.get('name')
+            if not project_name:
+                return jsonify({"error": "Project name is required"}), 400
+
+            # Get all uploaded files
+            uploaded_files = []
+            for key in request.files:
+                files = request.files.getlist(key)
+                uploaded_files.extend(files)
+
+            if not uploaded_files:
+                return jsonify({"error": "At least one file is required"}), 400
+
+            app.logger.info(f"Processing {len(uploaded_files)} files for project: {project_name}")
+
+            # Process and merge multiple files
+            merged_df, merge_error, merge_summary = merge_multiple_files(uploaded_files)
+
+            if merge_error:
+                return jsonify({
+                    "error": "Failed to process files",
+                    "details": merge_error,
+                    "summary": merge_summary
+                }), 400
+
+            # Create the project
+            project = Project(
+                name=project_name,
+                user_id=user_id_int,
+                keywords={"include": [], "exclude": []}
+            )
+            db.session.add(project)
+            db.session.commit()
+            db.session.refresh(project)
+
+            # Create citations from merged data
+            new_citations, skipped_count = create_citations_from_merged_data(
+                merged_df, project.id, project.current_iteration
+            )
+
+            # Bulk insert citations
+            if new_citations:
+                db.session.bulk_save_objects(new_citations)
+                
+                # Update project status
+                project.citations_count = len(new_citations)
+                project.duplicates_removed = False
+                project.keywords_selected = False
+                
+                db.session.commit()
+
+            app.logger.info(f"Project created successfully with ID: {project.id}, {len(new_citations)} citations added")
+
+            return jsonify({
+                "project": {
+                    "id": project.id,
+                    "name": project.name,
+                    "created_at": project.created_at,
+                    "current_iteration": project.current_iteration,
+                    "citations_count": len(new_citations)
+                },
+                "upload_summary": {
+                    "files_processed": merge_summary.get('files_processed', 0),
+                    "total_files": merge_summary.get('total_files', 0),
+                    "total_citations": len(new_citations),
+                    "skipped_citations": skipped_count,
+                    "processing_errors": merge_summary.get('processing_errors', []),
+                    "file_summaries": merge_summary.get('file_summaries', [])
+                },
+                "message": f"Project created successfully with {len(new_citations)} citations from {merge_summary.get('files_processed', 0)} files"
+            }), 201
+
+        else:
+            # Regular project creation without files (existing functionality)
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+
+            if 'name' not in data:
+                return jsonify({"error": "Project name is required"}), 400
+
+            project = Project(
+                name=data['name'],
+                user_id=user_id_int,
+                keywords={"include": [], "exclude": []}
+            )
+            db.session.add(project)
+            db.session.commit()
+            db.session.refresh(project)
+
+            return jsonify({
+                "project": {
+                    "id": project.id,
+                    "name": project.name,
+                    "created_at": project.created_at,
+                    "current_iteration": project.current_iteration
+                }
+            }), 201
 
     except Exception as e:
         app.logger.error(f"Project creation error: {str(e)}")
         db.session.rollback()
         return jsonify({"error": "Failed to create project", "details": str(e)}), 500
-        app.logger.error(f"Project creation error: {str(e)}")
-        db.session.rollback()
-        return jsonify({"error": "Failed to create project", "details": str(e)}), 500
-
 
 @app.route('/api/projects/<int:project_id>/citations', methods=['POST'])
 def add_citations(project_id):
