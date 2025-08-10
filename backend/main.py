@@ -2639,7 +2639,7 @@ def process_advanced_duplicates(df):
             else:
                 app.logger.warning(f"TF-IDF analysis failed: {similarity_result['error']}")
 
-        removal_strategy = f"Multi-stage: Hash-based exact duplicate detection + TF-IDF similarity analysis (threshold: 0.75)"
+        removal_strategy = f"Multi-stage: Hash-based exact duplicate detection + TF-IDF similarity analysis (threshold: 0.90)"
 
         return {
             'error': None,
@@ -2756,14 +2756,14 @@ def calculate_tfidf_similarity(df, duplicate_details):
             stop_words='english', 
             ngram_range=(1, 2),
             min_df=1,
-            max_df=0.75
+            max_df=0.90
         )
 
         tfidf_matrix = vectorizer.fit_transform(texts)
         similarity_matrix = cosine_similarity(tfidf_matrix)
 
-        # Find similar pairs using higher threshold (75% similarity)
-        similarity_threshold = 0.75
+        # Find similar pairs using higher threshold (90% similarity)
+        similarity_threshold = 0.90
         to_remove = set()
         comparisons_made = 0
 
