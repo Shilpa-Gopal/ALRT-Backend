@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 app = create_app()
+MIN_LABELS_PER_CATEGORY = 5
+MAX_LABELS_PER_CATEGORY = 10
 
 import json
 import numpy as np
@@ -1894,9 +1896,24 @@ def train_model(project_id):
         relevant_count = sum(1 for c in filtered_citations if c.is_relevant == True)
         irrelevant_count = sum(1 for c in filtered_citations if c.is_relevant == False)
 
-        if relevant_count < 5 or irrelevant_count < 5:
+        # NEW validation:
+        MIN_LABELS_PER_CATEGORY = 5
+        MAX_LABELS_PER_CATEGORY = 10
+
+        if relevant_count < MIN_LABELS_PER_CATEGORY or irrelevant_count < MIN_LABELS_PER_CATEGORY:
             return jsonify({
-                "error": f"Need at least 5 relevant and 5 irrelevant user-labeled citations (excluding duplicates and keyword-filtered). Currently have {relevant_count} relevant and {irrelevant_count} irrelevant from {len(filtered_citations)} valid citations."
+                "error": f"Need at least {MIN_LABELS_PER_CATEGORY} relevant and {MIN_LABELS_PER_CATEGORY} irrelevant user-labeled citations (excluding duplicates and keyword-filtered). Currently have {relevant_count} relevant and {irrelevant_count} irrelevant from {len(filtered_citations)} valid citations."
+            }), 400
+
+        if relevant_count > MAX_LABELS_PER_CATEGORY or irrelevant_count > MAX_LABELS_PER_CATEGORY:
+            return jsonify({
+                "error": f"Maximum {MAX_LABELS_PER_CATEGORY} citations per category allowed for balanced training. Currently have {relevant_count} relevant and {irrelevant_count} irrelevant. Please unlabel some citations before training."
+            }), 400
+
+        # Update the minimum total citations check:
+        if len(filtered_citations) < (MIN_LABELS_PER_CATEGORY * 2):
+            return jsonify({
+                "error": f"Need at least {MIN_LABELS_PER_CATEGORY * 2} user-labeled citations total (excluding duplicates and keyword-filtered) to train. Currently have {len(filtered_citations)} valid labeled citations."
             }), 400
 
         app.logger.info(f"Training model for project {project_id} with {len(filtered_citations)} user-labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant). Excluded {keyword_excluded_count} due to keywords.")
