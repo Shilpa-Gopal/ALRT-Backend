@@ -26,10 +26,16 @@ class Project(db.Model):
     keywords_selected = db.Column(db.Boolean, default=False)
     citations_count = db.Column(db.Integer, default=0)
     
-    # NEW: Duplicate removal details storage
+    # NEW: Enhanced duplicate removal details storage
     duplicate_details = db.Column(db.JSON, default=list)
     processing_summary = db.Column(db.JSON, default=dict)
     removal_strategy = db.Column(db.String(500), nullable=True)
+    
+    # NEW: Enhanced duplicate detection fields
+    detection_method_used = db.Column(db.String(100), nullable=True)
+    year_resolution_count = db.Column(db.Integer, default=0)
+    abstract_resolution_count = db.Column(db.Integer, default=0)
+    columns_standardized = db.Column(db.Boolean, default=False)
 
 class Citation(db.Model):
     id = db.Column(db.Integer, primary_key=True)

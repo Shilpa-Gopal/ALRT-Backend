@@ -155,13 +155,12 @@ def apply_keyword_filtering(citations, project):
     return filtered_citations
 
 def process_duplicates_and_create_citations(df, project_id, current_iteration):
-    """Optimized duplicate processing using vectorization and hashing"""
+    """Enhanced duplicate processing with column standardization and new detection logic"""
 
-    app.logger.info(f"Processing {len(df)} citations for duplicates")
+    app.logger.info(f"Processing {len(df)} citations for enhanced duplicates")
 
-    # Normalize column names
-    df_normalized = df.copy()
-    df_normalized.columns = df_normalized.columns.str.lower()
+    # Normalize column names and standardize to consistent format
+    df_normalized = standardize_dataframe_columns(df.copy())
 
     # Check required columns
     if 'title' not in df_normalized.columns or 'abstract' not in df_normalized.columns:
@@ -173,48 +172,25 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
             'duplicate_details': []
         }
 
-    # Find optional columns
-    year_col = find_year_column(df)
-    authors_col = None
-    for col in df.columns:
-        if 'author' in col.lower():
-            authors_col = col
-            break
+    # Check if we have author and year information
+    has_authors = 'authors' in df_normalized.columns and not df_normalized['authors'].isna().all()
+    has_year = 'publication_year' in df_normalized.columns and not df_normalized['publication_year'].isna().all()
 
-    # Step 1: Quick hash-based duplicate detection for exact matches
-    df['text_hash'] = df.apply(lambda row: create_text_hash(
-        row['title'], 
-        row['abstract'], 
-        row.get(authors_col) if authors_col else None
-    ), axis=1)
+    app.logger.info(f"Enhanced duplicate detection: Authors present: {has_authors}, Year present: {has_year}")
+    app.logger.info(f"DataFrame columns after standardization: {list(df_normalized.columns)}")
+    app.logger.info(f"DataFrame shape: {df_normalized.shape}")
+    app.logger.info(f"Sample data - First row title: '{df_normalized.iloc[0]['title'] if len(df_normalized) > 0 else 'N/A'}'")
+    app.logger.info(f"Sample data - First row abstract: '{str(df_normalized.iloc[0]['abstract'])[:50] if len(df_normalized) > 0 else 'N/A'}...'")
 
-    # Step 2: Group by hash to find exact duplicates
-    hash_groups = df.groupby('text_hash')
+    # Apply the new enhanced duplicate processing logic
+    result = process_enhanced_duplicates(df_normalized, has_authors, has_year)
 
-    # Step 3: For groups with multiple items, apply selection strategy
-    final_citations = []
-    duplicate_details = []
-    removal_strategy = "Hash-based with TF-IDF similarity fallback"
+    if result['error']:
+        return result
 
-    for hash_val, group in hash_groups:
-        if len(group) == 1:
-            # No duplicates
-            final_citations.append(group.iloc[0])
-        else:
-            # Handle duplicates within this group
-            app.logger.info(f"Found {len(group)} potential duplicates")
-
-            # Select best citation from this group
-            best_citation = select_best_citation(group, year_col, duplicate_details)
-            final_citations.append(best_citation)
-
-    # Step 4: For remaining potential near-duplicates, use TF-IDF
-    if len(final_citations) > 1:
-        final_citations = remove_similar_citations(final_citations, authors_col, duplicate_details)
-
-    # Create Citation objects
+    # Create Citation objects from the kept citations
     new_citations = []
-    for _, row in enumerate(final_citations):
+    for _, row in enumerate(result['citations_to_keep']):
         citation = Citation(
             title=str(row['title']),
             abstract=str(row['abstract']),
@@ -224,14 +200,16 @@ def process_duplicates_and_create_citations(df, project_id, current_iteration):
         new_citations.append(citation)
 
     duplicates_removed = len(df) - len(new_citations)
-    app.logger.info(f"Removed {duplicates_removed} duplicates, keeping {len(new_citations)} citations")
+    app.logger.info(f"Enhanced duplicate removal completed: {duplicates_removed} duplicates removed, keeping {len(new_citations)} citations")
+    app.logger.info(f"DEBUG: Original DataFrame length: {len(df)}, Citations kept: {len(new_citations)}")
+    app.logger.info(f"DEBUG: Duplicate details: {result['duplicate_details']}")
 
     return {
         'error': None,
         'citations': new_citations,
         'duplicates_removed': duplicates_removed,
-        'removal_strategy': removal_strategy,
-        'duplicate_details': duplicate_details[:10]
+        'removal_strategy': result['strategy'],
+        'duplicate_details': result['duplicate_details'][:10]  # Return first 10 for response
     }
 
 def select_best_citation(group, year_col, duplicate_details):
@@ -484,6 +462,42 @@ with app.app_context():
         
     except Exception as e:
         app.logger.error(f"Migration error for duplicate details storage: {str(e)}")
+        db.session.rollback()
+
+    # Migration: Add enhanced duplicate detection fields
+    try:
+        # Check if new enhanced duplicate detection columns exist
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'project' AND column_name IN 
+            ('detection_method_used', 'year_resolution_count', 'abstract_resolution_count', 'columns_standardized')
+        """)).fetchall()
+        
+        existing_columns = [row[0] for row in result]
+        
+        # Add missing columns
+        if 'detection_method_used' not in existing_columns:
+            app.logger.info("Adding detection_method_used column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN detection_method_used VARCHAR(100)"))
+        
+        if 'year_resolution_count' not in existing_columns:
+            app.logger.info("Adding year_resolution_count column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN year_resolution_count INTEGER DEFAULT 0"))
+        
+        if 'abstract_resolution_count' not in existing_columns:
+            app.logger.info("Adding abstract_resolution_count column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN abstract_resolution_count INTEGER DEFAULT 0"))
+        
+        if 'columns_standardized' not in existing_columns:
+            app.logger.info("Adding columns_standardized column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN columns_standardized BOOLEAN DEFAULT FALSE"))
+        
+        db.session.commit()
+        app.logger.info("Migration completed: Enhanced duplicate detection fields added")
+        
+    except Exception as e:
+        app.logger.error(f"Migration error for enhanced duplicate detection: {str(e)}")
         db.session.rollback()
 
 
@@ -1392,7 +1406,51 @@ def merge_multiple_files(files):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 def create_citations_from_merged_data(df, project_id, current_iteration):
-    """Create Citation objects from merged DataFrame"""
+    """Create Citation objects from merged DataFrame with enhanced duplicate processing"""
+    app.logger.info(f"Processing {len(df)} citations for project {project_id}")
+    
+    # Apply enhanced duplicate processing
+    duplicate_result = process_duplicates_and_create_citations(df, project_id, current_iteration)
+    
+    if duplicate_result['error']:
+        app.logger.error(f"Duplicate processing failed: {duplicate_result['error']}")
+        # Fallback to basic processing without duplicates
+        return create_citations_basic(df, project_id, current_iteration)
+    
+    # Get the processed citations and duplicate details
+    new_citations = duplicate_result['citations']
+    duplicates_removed = duplicate_result['duplicates_removed']
+    removal_strategy = duplicate_result['removal_strategy']
+    duplicate_details = duplicate_result['duplicate_details']
+    
+    # Update project with duplicate processing results
+    try:
+        project = Project.query.get(project_id)
+        if project:
+            project.duplicates_removed = True
+            project.duplicates_count = duplicates_removed
+            project.removal_strategy = removal_strategy
+            project.duplicate_details = duplicate_details
+            project.detection_method_used = "Enhanced TF-IDF with column standardization"
+            project.columns_standardized = True
+            
+            # Count resolution strategies used
+            year_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'year_resolution')
+            abstract_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'abstract_resolution')
+            
+            project.year_resolution_count = year_resolution_count
+            project.abstract_resolution_count = abstract_resolution_count
+            
+            db.session.commit()
+            app.logger.info(f"Project {project_id} updated with duplicate processing results")
+    except Exception as e:
+        app.logger.error(f"Failed to update project with duplicate details: {str(e)}")
+    
+    app.logger.info(f"Enhanced duplicate processing completed: {len(new_citations)} citations kept, {duplicates_removed} duplicates removed")
+    return new_citations, duplicates_removed
+
+def create_citations_basic(df, project_id, current_iteration):
+    """Fallback function for basic citation creation without duplicate processing"""
     new_citations = []
     skipped_count = 0
     
@@ -1717,38 +1775,66 @@ def add_citations(project_id):
                         "normalized_columns": list(df.columns)
                     }), 400
 
-                # Create citations from normalized DataFrame with text normalization
-                new_citations = []
-                for _, row in df.iterrows():
-                    # Normalize title: strip spaces, clean special characters, handle NaN
-                    title_raw = row['title']
-                    if pd.isna(title_raw) or str(title_raw).strip() == '':
-                        continue  # Skip citations with empty titles
+                # Apply enhanced duplicate processing to the DataFrame
+                app.logger.info(f"Processing {len(df)} citations with enhanced duplicate detection")
+                
+                duplicate_result = process_duplicates_and_create_citations(df, project_id, project.current_iteration)
+                
+                if duplicate_result['error']:
+                    app.logger.error(f"Duplicate processing failed: {duplicate_result['error']}")
+                    # Fallback to basic processing without duplicates
+                    new_citations = []
+                    for _, row in df.iterrows():
+                        # Normalize title: strip spaces, clean special characters, handle NaN
+                        title_raw = row['title']
+                        if pd.isna(title_raw) or str(title_raw).strip() == '':
+                            continue  # Skip citations with empty titles
 
-                    title_clean = str(title_raw).strip()
-                    # Remove excessive whitespace and normalize
-                    title_clean = re.sub(r'\s+', ' ', title_clean)
-
-                    # Normalize abstract: strip spaces, clean special characters, handle NaN
-                    abstract_raw = row['abstract']
-                    if pd.isna(abstract_raw):
-                        abstract_clean = ""
-                    else:
-                        abstract_clean = str(abstract_raw).strip()
+                        title_clean = str(title_raw).strip()
                         # Remove excessive whitespace and normalize
-                        abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
+                        title_clean = re.sub(r'\s+', ' ', title_clean)
 
-                    # Skip citations with empty abstracts as they're not useful
-                    if abstract_clean == "":
-                        continue
+                        # Normalize abstract: strip spaces, clean special characters, handle NaN
+                        abstract_raw = row['abstract']
+                        if pd.isna(abstract_raw):
+                            abstract_clean = ""
+                        else:
+                            abstract_clean = str(abstract_raw).strip()
+                            # Remove excessive whitespace and normalize
+                            abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
 
-                    citation = Citation(
-                        title=title_clean,
-                        abstract=abstract_clean,
-                        project_id=project_id,
-                        iteration=project.current_iteration
-                    )
-                    new_citations.append(citation)
+                        # Skip citations with empty abstracts as they're not useful
+                        if abstract_clean == "":
+                            continue
+
+                        citation = Citation(
+                            title=title_clean,
+                            abstract=abstract_clean,
+                            project_id=project_id,
+                            iteration=project.current_iteration
+                        )
+                        new_citations.append(citation)
+                else:
+                    # Use the processed citations from duplicate detection
+                    new_citations = duplicate_result['citations']
+                    duplicates_removed = duplicate_result['duplicates_removed']
+                    removal_strategy = duplicate_result['removal_strategy']
+                    duplicate_details = duplicate_result['duplicate_details']
+                    
+                    # Update project with duplicate processing results
+                    project.duplicates_removed = True
+                    project.duplicates_count = duplicates_removed
+                    project.removal_strategy = removal_strategy
+                    project.duplicate_details = duplicate_details
+                    project.detection_method_used = "Enhanced TF-IDF with column standardization"
+                    project.columns_standardized = True
+                    
+                    # Count resolution strategies used
+                    year_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'year_resolution')
+                    abstract_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'abstract_resolution')
+                    
+                    project.year_resolution_count = year_resolution_count
+                    project.abstract_resolution_count = abstract_resolution_count
 
                 # Update project status after successful upload
                 project.citations_count = len(new_citations)
@@ -1759,15 +1845,32 @@ def add_citations(project_id):
                 db.session.bulk_save_objects(new_citations)
                 db.session.commit()
 
+                # Prepare response message based on whether duplicates were processed
+                if duplicate_result.get('error'):
+                    response_message = f"Added {len(new_citations)} citations (duplicate processing failed, using fallback)"
+                    duplicates_removed_status = False
+                else:
+                    duplicates_removed_count = duplicate_result.get('duplicates_removed', 0)
+                    response_message = f"Added {len(new_citations)} citations with {duplicates_removed_count} duplicates automatically removed"
+                    duplicates_removed_status = True
+                
                 return jsonify({
-                    "message": f"Added {len(new_citations)} citations",
+                    "message": response_message,
                     "total_citations": len(new_citations),
-                    "note": "Use 'Detect and Remove Duplicates' button in keywords section to remove any duplicates",
+                    "note": "Duplicates were automatically processed during upload" if duplicates_removed_status else "Duplicate processing failed, manual review recommended",
                     
                     # Status information for frontend
                     "citations_count": len(new_citations),
-                    "duplicates_removed": False,
-                    "keywords_selected": project.keywords_selected
+                    "duplicates_removed": duplicates_removed_status,
+                    "keywords_selected": project.keywords_selected,
+                    
+                    # Enhanced duplicate processing details
+                    "duplicate_processing": {
+                        "success": duplicates_removed_status,
+                        "duplicates_removed": duplicate_result.get('duplicates_removed', 0) if not duplicate_result.get('error') else 0,
+                        "strategy": duplicate_result.get('strategy', 'None') if not duplicate_result.get('error') else 'Fallback',
+                        "columns_standardized": duplicate_result.get('error') is None
+                    }
                 }), 201
 
             except Exception as e:
@@ -2529,20 +2632,59 @@ def remove_duplicates(project_id):
 
         df = pd.DataFrame(citations_data)
 
-        # Apply the advanced duplicate processing logic
-        result = process_advanced_duplicates(df)
+        # Apply the enhanced duplicate processing logic with column standardization
+        app.logger.info(f"Using enhanced duplicate detection for {len(df)} citations")
+        
+        # Standardize the DataFrame columns
+        df_standardized = standardize_dataframe_columns(df.copy())
+        
+        # Check if we have author and year information
+        has_authors = 'authors' in df_standardized.columns and not df_standardized['authors'].isna().all()
+        has_year = 'publication_year' in df_standardized.columns and not df_standardized['publication_year'].isna().all()
+        
+        app.logger.info(f"Enhanced duplicate detection: Authors present: {has_authors}, Year present: {has_year}")
+        
+        # Apply the new enhanced duplicate processing logic
+        app.logger.info(f"Calling enhanced duplicate processing with DataFrame: {df_standardized.shape}")
+        app.logger.info(f"DataFrame columns: {list(df_standardized.columns)}")
+        app.logger.info(f"Sample data - First row: {df_standardized.iloc[0].to_dict() if len(df_standardized) > 0 else 'Empty'}")
+        
+        result = process_enhanced_duplicates(df_standardized, has_authors, has_year)
+        
+        if result['error']:
+            app.logger.error(f"Enhanced duplicate processing failed: {result['error']}")
+            # Fallback to old advanced processing
+            app.logger.info("Falling back to advanced duplicate processing")
+            result = process_advanced_duplicates(df)
+        else:
+            app.logger.info(f"Enhanced duplicate processing successful: {len(result.get('citations_to_keep', []))} citations kept")
+            app.logger.info(f"Result keys: {list(result.keys())}")
 
         if result['error']:
             return jsonify({"error": result['error']}), 400
 
-        # Get citation IDs to keep
-        kept_indices = result['kept_indices']
-        citations_to_keep = [citations[i] for i in kept_indices]
-        citations_to_remove = [citations[i] for i in range(len(citations)) if i not in kept_indices]
+        # Get citation IDs to keep - handle both enhanced and advanced systems
+        if 'kept_indices' in result:
+            # Old advanced system response
+            kept_indices = result['kept_indices']
+            citations_to_keep = [citations[i] for i in kept_indices]
+            citations_to_remove = [citations[i] for i in range(len(citations)) if i not in kept_indices]
+        else:
+            # New enhanced system response
+            citations_to_keep = result['citations_to_keep']
+            # Find citations to remove by comparing with original citations
+            kept_citation_ids = [citation['id'] for citation in citations_to_keep]
+            citations_to_remove = [citation for citation in citations if citation.id not in kept_citation_ids]
 
         # Mark duplicates instead of deleting them
         duplicates_marked = len(citations_to_remove)
-        citation_ids_to_mark = [citations[i].id for i in range(len(citations)) if i not in kept_indices]
+        
+        if 'kept_indices' in result:
+            # Old advanced system - use indices
+            citation_ids_to_mark = [citations[i].id for i in range(len(citations)) if i not in kept_indices]
+        else:
+            # New enhanced system - use citation objects
+            citation_ids_to_mark = [citation.id for citation in citations_to_remove]
 
         if citation_ids_to_mark:
             Citation.query.filter(Citation.id.in_(citation_ids_to_mark)).update(
@@ -2554,28 +2696,73 @@ def remove_duplicates(project_id):
         project.duplicates_count = duplicates_marked
         project.citations_count = len(citations_to_keep)
         
-        # Store ALL duplicate details (not just first 10)
-        # Convert numpy types to JSON serializable types before storing
-        project.duplicate_details = make_json_serializable(result['duplicate_details'])
-        project.processing_summary = make_json_serializable(result['processing_summary'])
-        project.removal_strategy = result['removal_strategy']
+        # Store duplicate details based on system used
+        if 'kept_indices' in result:
+            # Old advanced system
+            project.duplicate_details = make_json_serializable(result['duplicate_details'])
+            project.processing_summary = make_json_serializable(result['processing_summary'])
+            project.removal_strategy = result['removal_strategy']
+            app.logger.info(f"Stored old system duplicate details: {len(result['duplicate_details'])} entries")
+        else:
+            # New enhanced system
+            project.duplicate_details = make_json_serializable(result['duplicate_details'])
+            project.removal_strategy = result['strategy']
+            project.detection_method_used = "Enhanced TF-IDF with column standardization"
+            project.columns_standardized = True
+            
+            # Count resolution strategies used
+            year_resolution_count = sum(1 for detail in result['duplicate_details'] if detail.get('type') == 'year_resolution')
+            abstract_resolution_count = sum(1 for detail in result['duplicate_details'] if detail.get('type') == 'abstract_resolution')
+            
+            project.year_resolution_count = year_resolution_count
+            project.abstract_resolution_count = abstract_resolution_count
+            
+            app.logger.info(f"Stored enhanced system duplicate details: {len(result['duplicate_details'])} entries")
+            app.logger.info(f"Sample duplicate detail: {result['duplicate_details'][0] if result['duplicate_details'] else 'None'}")
 
         db.session.commit()
         app.logger.info(f"Marked {duplicates_marked} citations as duplicates in project {project_id}")
 
-        return jsonify({
-            "message": f"Advanced duplicate detection completed",
-            "duplicates_marked": duplicates_marked,
-            "unique_citations": len(citations_to_keep),
-            "removal_strategy": result['removal_strategy'],
-            "duplicate_details": result['duplicate_details'][:10],  # Still return first 10 in response
-            "processing_summary": result['processing_summary'],
+        # Prepare response based on system used
+        if 'kept_indices' in result:
+            # Old advanced system response
+            response_data = {
+                "message": f"Advanced duplicate detection completed",
+                "duplicates_marked": duplicates_marked,
+                "unique_citations": len(citations_to_keep),
+                "removal_strategy": result['removal_strategy'],
+                "duplicate_details": result['duplicate_details'][:10],
+                "processing_summary": result['processing_summary'],
+                
+                # Status fields for frontend
+                "duplicates_removed": True,
+                "duplicates_count": duplicates_marked,
+                "citations_count": len(citations_to_keep)
+            }
+        else:
+            # New enhanced system response
+            response_data = {
+                "message": f"Enhanced duplicate detection completed",
+                "duplicates_marked": duplicates_marked,
+                "unique_citations": len(citations_to_keep),
+                "removal_strategy": result['strategy'],
+                "duplicate_details": result['duplicate_details'][:10],
+                "processing_summary": {
+                    "detection_method": "Enhanced TF-IDF with column standardization",
+                    "duplicates_found": len(result['duplicate_details']),
+                    "strategy_used": result['strategy']
+                },
+                
+                # Status fields for frontend
+                "duplicates_removed": True,
+                "duplicates_count": duplicates_marked,
+                "citations_count": len(citations_to_keep)
+            }
             
-            # Status fields for frontend
-            "duplicates_removed": True,
-            "duplicates_count": duplicates_marked,
-            "citations_count": len(citations_to_keep)
-        }), 200
+            app.logger.info(f"Enhanced system response - duplicate_details count: {len(result['duplicate_details'])}")
+            app.logger.info(f"Enhanced system response - sample duplicate_detail: {result['duplicate_details'][0] if result['duplicate_details'] else 'None'}")
+        
+        return jsonify(response_data), 200
 
     except Exception as e:
         app.logger.error(f"Error removing duplicates: {str(e)}")
@@ -2842,6 +3029,328 @@ def should_keep_citation_i(citation_i, citation_j):
 
     return score_i >= score_j
 
+def process_enhanced_duplicates(df, has_authors, has_year):
+    """Main function to process duplicates using enhanced logic"""
+    try:
+        app.logger.info(f"Starting enhanced duplicate processing. Authors: {has_authors}, Year: {has_year}")
+        app.logger.info(f"Input DataFrame shape: {df.shape}")
+        app.logger.info(f"Input DataFrame columns: {list(df.columns)}")
+        
+        # Validate required columns
+        if 'title' not in df.columns:
+            app.logger.error(f"Title column not found. Available columns: {list(df.columns)}")
+            return {'error': 'Title column is required but not found', 'citations_to_keep': [], 'duplicate_details': [], 'strategy': 'Error'}
+        
+        if 'abstract' not in df.columns:
+            app.logger.error(f"Abstract column not found. Available columns: {list(df.columns)}")
+            return {'error': 'Abstract column is required but not found', 'citations_to_keep': [], 'duplicate_details': [], 'strategy': 'Error'}
+        
+        duplicate_details = []
+        citations_to_keep = []
+        
+        if has_authors:
+            # Scenario 1: Authors present - check title + authors
+            app.logger.info("Processing duplicates with author information")
+            result = detect_duplicates_with_authors(df, has_year)
+            citations_to_keep = result['citations_to_keep']
+            duplicate_details.extend(result['duplicate_details'])
+            strategy = "Title + Authors with 90% TF-IDF similarity"
+        else:
+            # Scenario 2: No authors - check title only
+            app.logger.info("Processing duplicates with title only")
+            result = detect_duplicates_title_only(df, has_year)
+            citations_to_keep = result['citations_to_keep']
+            duplicate_details.extend(result['duplicate_details'])
+            strategy = "Title only with 90% TF-IDF similarity"
+        
+        app.logger.info(f"Enhanced duplicate processing completed. Keeping {len(citations_to_keep)} citations")
+        
+        return {
+            'error': None,
+            'citations_to_keep': citations_to_keep,
+            'duplicate_details': duplicate_details,
+            'strategy': strategy
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Error in enhanced duplicate processing: {str(e)}")
+        return {
+            'error': f'Enhanced duplicate processing failed: {str(e)}',
+            'citations_to_keep': [],
+            'duplicate_details': [],
+            'strategy': 'Error'
+        }
+
+def detect_duplicates_with_authors(df, has_year):
+    """Detect duplicates when authors are present (Title + Authors)"""
+    duplicate_details = []
+    citations_to_keep = []
+    
+    # Create combined text for comparison (title + authors)
+    df['combined_text'] = df['title'].astype(str) + ' ' + df['authors'].astype(str)
+    
+    # Apply TF-IDF similarity detection
+    vectorizer = TfidfVectorizer(
+        max_features=1000,
+        stop_words='english',
+        ngram_range=(1, 2),
+        min_df=1
+    )
+    
+    try:
+        tfidf_matrix = vectorizer.fit_transform(df['combined_text'].fillna(''))
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Find groups of similar citations (90% threshold)
+        processed_indices = set()
+        
+        for i in range(len(df)):
+            if i in processed_indices:
+                continue
+                
+            # Find all citations similar to this one
+            similar_indices = [i]
+            for j in range(i + 1, len(df)):
+                if j not in processed_indices and similarity_matrix[i][j] >= 0.9:
+                    similar_indices.append(j)
+            
+            if len(similar_indices) > 1:
+                # Duplicates found - resolve using year or abstract length
+                group = df.iloc[similar_indices]
+                best_citation = resolve_duplicates_by_strategy(group, has_year, duplicate_details)
+                citations_to_keep.append(best_citation)
+                
+                # Mark all as processed
+                processed_indices.update(similar_indices)
+                
+                app.logger.info(f"Found {len(similar_indices)} duplicates, kept 1 based on strategy")
+            else:
+                # No duplicates - keep this citation
+                citations_to_keep.append(df.iloc[i])
+                processed_indices.add(i)
+        
+        return {
+            'citations_to_keep': citations_to_keep,
+            'duplicate_details': duplicate_details
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Error in author-based duplicate detection: {str(e)}")
+        # Fallback: return all citations
+        return {
+            'citations_to_keep': [df.iloc[i] for i in range(len(df))],
+            'duplicate_details': [{'error': f'Author-based detection failed: {str(e)}'}]
+        }
+
+def detect_duplicates_title_only(df, has_year):
+    """Detect duplicates when authors are not present (Title only)"""
+    app.logger.info(f"Starting title-only duplicate detection. DataFrame shape: {df.shape}")
+    app.logger.info(f"Sample titles: {list(df['title'].head(3))}")
+    
+    duplicate_details = []
+    citations_to_keep = []
+    
+    # Apply TF-IDF similarity detection on title only
+    vectorizer = TfidfVectorizer(
+        max_features=1000,
+        stop_words='english',
+        ngram_range=(1, 2),
+        min_df=1
+    )
+    
+    try:
+        tfidf_matrix = vectorizer.fit_transform(df['title'].fillna(''))
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Debug: Print similarity matrix
+        app.logger.info(f"DEBUG: TF-IDF matrix shape: {tfidf_matrix.shape}")
+        app.logger.info(f"DEBUG: Similarity matrix shape: {similarity_matrix.shape}")
+        for i in range(len(similarity_matrix)):
+            for j in range(i + 1, len(similarity_matrix)):
+                app.logger.info(f"DEBUG: Similarity [{i}][{j}] = {similarity_matrix[i][j]:.3f}")
+        
+        # Find groups of similar citations (80% threshold for title-only)
+        processed_indices = set()
+        
+        for i in range(len(df)):
+            if i in processed_indices:
+                continue
+                
+            # Find all citations similar to this one
+            similar_indices = [i]
+            for j in range(i + 1, len(df)):
+                # Use 90% threshold for title-only comparison
+                similarity_threshold = 0.9  # 90% threshold
+                if j not in processed_indices and similarity_matrix[i][j] >= similarity_threshold:
+                    app.logger.info(f"DEBUG: Found duplicate with similarity {similarity_matrix[i][j]:.3f} >= {similarity_threshold}")
+                    similar_indices.append(j)
+                else:
+                    app.logger.info(f"DEBUG: Not a duplicate: similarity {similarity_matrix[i][j]:.3f} < {similarity_threshold}")
+            
+            if len(similar_indices) > 1:
+                # Duplicates found - resolve using year or abstract length
+                group = df.iloc[similar_indices]
+                best_citation = resolve_duplicates_by_strategy(group, has_year, duplicate_details)
+                citations_to_keep.append(best_citation)
+                
+                # Mark all as processed
+                processed_indices.update(similar_indices)
+                
+                app.logger.info(f"Found {len(similar_indices)} duplicates, kept 1 based on strategy")
+            else:
+                # No duplicates - keep this citation
+                citations_to_keep.append(df.iloc[i])
+                processed_indices.add(i)
+        
+        return {
+            'citations_to_keep': citations_to_keep,
+            'duplicate_details': duplicate_details
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Error in title-only duplicate detection: {str(e)}")
+        # Fallback: return all citations
+        return {
+            'citations_to_keep': [df.iloc[i] for i in range(len(df))],
+            'duplicate_details': [{'error': f'Title-only detection failed: {str(e)}'}]
+        }
+
+def resolve_duplicates_by_strategy(group, has_year, duplicate_details):
+    """Resolve duplicates using year or abstract length strategy"""
+    if has_year:
+        # Strategy 1: Keep the one with older published year
+        year_resolution_count = 0
+        best_citation = None
+        oldest_year = float('inf')
+        
+        for _, row in group.iterrows():
+            year = extract_year_from_value(row.get('publication_year'))
+            if year and year < oldest_year:
+                oldest_year = year
+                best_citation = row
+                year_resolution_count += 1
+        
+        if best_citation is not None:
+            # Store detailed information about kept vs removed citations
+            for _, row in group.iterrows():
+                if row.name != best_citation.name:
+                    duplicate_details.append({
+                        'type': 'year_resolution',
+                        'kept': {
+                            'title': str(best_citation.get('title', 'N/A')),
+                            'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
+                        },
+                        'removed': {
+                            'title': str(row.get('title', 'N/A')),
+                            'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(row.get('abstract', 'N/A'))
+                        },
+                        'reason': f'Older publication year ({oldest_year})',
+                        'strategy': 'Year-based resolution'
+                    })
+            return best_citation
+    
+    # Strategy 2: Keep the one with longer abstract content
+    abstract_resolution_count = 0
+    best_citation = None
+    max_abstract_length = 0
+    
+    for _, row in group.iterrows():
+        abstract = str(row.get('abstract', ''))
+        if len(abstract) > max_abstract_length:
+            max_abstract_length = len(abstract)
+            best_citation = row
+            abstract_resolution_count += 1
+    
+    if best_citation is not None:
+        # Store detailed information about kept vs removed citations
+        for _, row in group.iterrows():
+            if row.name != best_citation.name:
+                duplicate_details.append({
+                    'type': 'abstract_resolution',
+                    'kept': {
+                        'title': str(best_citation.get('title', 'N/A')),
+                        'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
+                    },
+                    'removed': {
+                        'title': str(row.get('title', 'N/A')),
+                        'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(row.get('abstract', 'N/A'))
+                    },
+                    'reason': f'Longer abstract content ({max_abstract_length} characters)',
+                    'strategy': 'Abstract length resolution'
+                })
+        return best_citation
+    
+    # If all else fails, return the first citation
+    if best_citation is None:
+        best_citation = group.iloc[0]
+        # Store detailed information about kept vs removed citations
+        for _, row in group.iterrows():
+            if row.name != best_citation.name:
+                duplicate_details.append({
+                    'type': 'fallback',
+                    'kept': {
+                        'title': str(best_citation.get('title', 'N/A')),
+                        'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
+                    },
+                    'removed': {
+                        'title': str(row.get('title', 'N/A')),
+                        'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
+                    },
+                    'reason': 'First citation (fallback)',
+                    'strategy': 'Fallback resolution'
+                })
+    
+    return best_citation
+
+def standardize_dataframe_columns(df):
+    """Standardize column names to consistent format for duplicate detection"""
+    df_normalized = df.copy()
+    
+    # Standardize column names to lowercase and remove extra spaces
+    df_normalized.columns = df_normalized.columns.str.lower().str.strip()
+    
+    # Map common column name variations to standard names
+    column_mapping = {}
+    
+    # Year column variations
+    year_patterns = ['year', 'publication_year', 'pub_year', 'published_year', 
+                    'publication_date', 'pub_date', 'date', 'published', 'pubdate']
+    year_col = find_column_by_patterns(df_normalized, year_patterns)
+    if year_col:
+        column_mapping[year_col] = 'publication_year'
+    
+    # Author column variations
+    author_patterns = ['author', 'authors', 'published_author', 'published_authors', 
+                      'by', 'written_by', 'creator', 'creators']
+    author_col = find_column_by_patterns(df_normalized, author_patterns)
+    if author_col:
+        column_mapping[author_col] = 'authors'
+    
+    # Title column variations
+    title_patterns = ['title', 'name', 'heading', 'headline', 'citation_title']
+    title_col = find_column_by_patterns(df_normalized, title_patterns)
+    if title_col:
+        column_mapping[title_col] = 'title'
+    
+    # Abstract column variations
+    abstract_patterns = ['abstract', 'summary', 'description', 'content', 'text', 'body']
+    abstract_col = find_column_by_patterns(df_normalized, abstract_patterns)
+    if abstract_col:
+        column_mapping[abstract_col] = 'abstract'
+    
+    # Rename columns to standard format
+    df_normalized = df_normalized.rename(columns=column_mapping)
+    
+    app.logger.info(f"Column standardization completed. Mapped columns: {column_mapping}")
+    return df_normalized
+
+def find_column_by_patterns(df, patterns):
+    """Find column by matching patterns (case insensitive)"""
+    for col in df.columns:
+        for pattern in patterns:
+            if pattern.lower() in col.lower():
+                return col
+    return None
 
 # At the end of your main.py file:
 if __name__ == "__main__":
