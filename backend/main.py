@@ -1913,6 +1913,75 @@ def update_citation(project_id, citation_id):
         return jsonify({"error": "Failed to update citation"}), 500
 
 
+@app.route('/api/projects/<int:project_id>/citations/<int:citation_id>/duplicate-status',
+           methods=['PUT'])
+def toggle_citation_duplicate_status(project_id, citation_id):
+    """Toggle citation duplicate status between true and false"""
+    try:
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user_id_int = int(user_id)
+        user = User.query.get(user_id_int)
+        if not user:
+            return jsonify({"error": "User not found"}), 401
+
+        # Allow admin access to any project, regular users only their own
+        if user.is_admin:
+            project = Project.query.get(project_id)
+        else:
+            project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        citation = Citation.query.filter_by(id=citation_id,
+                                          project_id=project_id).first()
+        if not citation:
+            return jsonify({"error": "Citation not found"}), 404
+
+        # Toggle the duplicate status
+        current_status = getattr(citation, 'is_duplicate', False)
+        new_status = not current_status
+        citation.is_duplicate = new_status
+
+        # Update project counts
+        if new_status:
+            # Citation is now marked as duplicate
+            project.duplicates_count = getattr(project, 'duplicates_count', 0) + 1
+            project.citations_count = getattr(project, 'citations_count', 0) - 1
+        else:
+            # Citation is now restored (not duplicate)
+            project.duplicates_count = max(0, getattr(project, 'duplicates_count', 0) - 1)
+            project.citations_count = getattr(project, 'citations_count', 0) + 1
+
+        db.session.commit()
+        
+        status_text = "marked as duplicate" if new_status else "restored (not duplicate)"
+        app.logger.info(f"Updated citation {citation_id} duplicate status to {new_status} for project {project_id}")
+
+        return jsonify({
+            "message": f"Citation {status_text} successfully",
+            "citation": {
+                "id": citation.id,
+                "title": citation.title,
+                "abstract": citation.abstract,
+                "is_duplicate": citation.is_duplicate,
+                "iteration": citation.iteration
+            },
+            "project": {
+                "citations_count": project.citations_count,
+                "duplicates_count": project.duplicates_count
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error toggling citation duplicate status: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to toggle citation duplicate status"}), 500
+
+
 @app.route('/api/projects/<int:project_id>/train', methods=['POST'])
 def train_model(project_id):
     try:
@@ -2395,6 +2464,38 @@ def get_iteration_info(project_id):
     })
 
 
+def add_duplicate_status_to_details(duplicate_details, project_id):
+    """Add is_duplicate field to duplicate details based on current database state"""
+    try:
+        # Get all citations for this project to check their current duplicate status
+        citations = Citation.query.filter_by(project_id=project_id).all()
+        citation_status_map = {c.id: getattr(c, 'is_duplicate', False) for c in citations}
+        
+        # Add is_duplicate field to each duplicate detail
+        enhanced_details = []
+        for detail in duplicate_details:
+            enhanced_detail = detail.copy()
+            
+            # Add is_duplicate status to kept citation
+            if 'kept' in detail and 'id' in detail['kept']:
+                kept_id = detail['kept']['id']
+                enhanced_detail['kept']['is_duplicate'] = citation_status_map.get(kept_id, False)
+            
+            # Add is_duplicate status to removed citation
+            if 'removed' in detail and 'id' in detail['removed']:
+                removed_id = detail['removed']['id']
+                enhanced_detail['removed']['is_duplicate'] = citation_status_map.get(removed_id, False)
+            
+            enhanced_details.append(enhanced_detail)
+        
+        return enhanced_details
+        
+    except Exception as e:
+        app.logger.error(f"Error adding duplicate status to details: {str(e)}")
+        # Return original details if enhancement fails
+        return duplicate_details
+
+
 @app.route('/api/projects/<int:project_id>', methods=['GET'])
 def get_project_details(project_id):
     """Get project details including citations"""
@@ -2452,8 +2553,8 @@ def get_project_details(project_id):
                 "citations_count_stored": project.citations_count,
                 "duplicates_count_stored": project.duplicates_count,
                 
-                # NEW: Duplicate details fields
-                "duplicate_details": project.duplicate_details or [],
+                # NEW: Duplicate details fields with is_duplicate status
+                "duplicate_details": add_duplicate_status_to_details(project.duplicate_details or [], project_id) if project.duplicate_details else [],
                 "processing_summary": project.processing_summary or {},
                 "removal_strategy": project.removal_strategy
             },
@@ -3209,10 +3310,12 @@ def resolve_duplicates_by_strategy(group, has_year, duplicate_details):
                     duplicate_details.append({
                         'type': 'year_resolution',
                         'kept': {
+                            'id': int(best_citation.get('id', 0)),
                             'title': str(best_citation.get('title', 'N/A')),
                             'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
                         },
                         'removed': {
+                            'id': int(row.get('id', 0)),
                             'title': str(row.get('title', 'N/A')),
                             'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(row.get('abstract', 'N/A'))
                         },
@@ -3240,10 +3343,12 @@ def resolve_duplicates_by_strategy(group, has_year, duplicate_details):
                 duplicate_details.append({
                     'type': 'abstract_resolution',
                     'kept': {
+                        'id': int(best_citation.get('id', 0)),
                         'title': str(best_citation.get('title', 'N/A')),
                         'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
                     },
                     'removed': {
+                        'id': int(row.get('id', 0)),
                         'title': str(row.get('title', 'N/A')),
                         'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(row.get('abstract', 'N/A'))
                     },
@@ -3261,10 +3366,12 @@ def resolve_duplicates_by_strategy(group, has_year, duplicate_details):
                 duplicate_details.append({
                     'type': 'fallback',
                     'kept': {
+                        'id': int(best_citation.get('id', 0)),
                         'title': str(best_citation.get('title', 'N/A')),
                         'abstract': str(best_citation.get('abstract', 'N/A'))[:100] + '...' if len(str(best_citation.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
                     },
                     'removed': {
+                        'id': int(row.get('id', 0)),
                         'title': str(row.get('title', 'N/A')),
                         'abstract': str(row.get('abstract', 'N/A'))[:100] + '...' if len(str(row.get('abstract', ''))) > 100 else str(best_citation.get('abstract', 'N/A'))
                     },
