@@ -1406,48 +1406,52 @@ def merge_multiple_files(files):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 def create_citations_from_merged_data(df, project_id, current_iteration):
-    """Create Citation objects from merged DataFrame with enhanced duplicate processing"""
-    app.logger.info(f"Processing {len(df)} citations for project {project_id}")
+    """Create Citation objects from merged DataFrame WITHOUT automatic duplicate processing"""
+    app.logger.info(f"Processing {len(df)} citations for project {project_id} - NO automatic duplicate removal")
     
-    # Apply enhanced duplicate processing
-    duplicate_result = process_duplicates_and_create_citations(df, project_id, current_iteration)
+    # Create citations directly without duplicate processing
+    new_citations = []
+    skipped_count = 0
     
-    if duplicate_result['error']:
-        app.logger.error(f"Duplicate processing failed: {duplicate_result['error']}")
-        # Fallback to basic processing without duplicates
-        return create_citations_basic(df, project_id, current_iteration)
+    for _, row in df.iterrows():
+        # Validate and clean title
+        title_raw = row.get('title')
+        if pd.isna(title_raw) or str(title_raw).strip() == '':
+            skipped_count += 1
+            continue
+        
+        title_clean = str(title_raw).strip()
+        title_clean = re.sub(r'\s+', ' ', title_clean)
+        
+        # Validate and clean abstract
+        abstract_raw = row.get('abstract')
+        if pd.isna(abstract_raw) or str(abstract_raw).strip() == '':
+            skipped_count += 1
+            continue
+        
+        abstract_clean = str(abstract_raw).strip()
+        abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
+        
+        # Create citation with additional metadata
+        citation_data = {
+            'title': title_clean,
+            'abstract': abstract_clean,
+            'project_id': project_id,
+            'iteration': current_iteration
+        }
+        
+        # Add optional fields as JSON metadata if they exist
+        metadata = {}
+        optional_fields = ['date', 'authors', 'journal', 'doi', 'keywords', 'source_file']
+        for field in optional_fields:
+            if field in row and pd.notna(row[field]):
+                metadata[field] = str(row[field]).strip()
+        
+        citation = Citation(**citation_data)
+        new_citations.append(citation)
     
-    # Get the processed citations and duplicate details
-    new_citations = duplicate_result['citations']
-    duplicates_removed = duplicate_result['duplicates_removed']
-    removal_strategy = duplicate_result['removal_strategy']
-    duplicate_details = duplicate_result['duplicate_details']
-    
-    # Update project with duplicate processing results
-    try:
-        project = Project.query.get(project_id)
-        if project:
-            project.duplicates_removed = True
-            project.duplicates_count = duplicates_removed
-            project.removal_strategy = removal_strategy
-            project.duplicate_details = duplicate_details
-            project.detection_method_used = "Enhanced TF-IDF with column standardization"
-            project.columns_standardized = True
-            
-            # Count resolution strategies used
-            year_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'year_resolution')
-            abstract_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'abstract_resolution')
-            
-            project.year_resolution_count = year_resolution_count
-            project.abstract_resolution_count = abstract_resolution_count
-            
-            db.session.commit()
-            app.logger.info(f"Project {project_id} updated with duplicate processing results")
-    except Exception as e:
-        app.logger.error(f"Failed to update project with duplicate details: {str(e)}")
-    
-    app.logger.info(f"Enhanced duplicate processing completed: {len(new_citations)} citations kept, {duplicates_removed} duplicates removed")
-    return new_citations, duplicates_removed
+    app.logger.info(f"Citation creation completed: {len(new_citations)} citations created, {skipped_count} skipped")
+    return new_citations, 0  # 0 duplicates removed since we're not processing duplicates here
 
 def create_citations_basic(df, project_id, current_iteration):
     """Fallback function for basic citation creation without duplicate processing"""
@@ -1775,66 +1779,40 @@ def add_citations(project_id):
                         "normalized_columns": list(df.columns)
                     }), 400
 
-                # Apply enhanced duplicate processing to the DataFrame
-                app.logger.info(f"Processing {len(df)} citations with enhanced duplicate detection")
+                # Create citations directly without duplicate processing
+                app.logger.info(f"Processing {len(df)} citations WITHOUT automatic duplicate detection")
                 
-                duplicate_result = process_duplicates_and_create_citations(df, project_id, project.current_iteration)
-                
-                if duplicate_result['error']:
-                    app.logger.error(f"Duplicate processing failed: {duplicate_result['error']}")
-                    # Fallback to basic processing without duplicates
-                    new_citations = []
-                    for _, row in df.iterrows():
-                        # Normalize title: strip spaces, clean special characters, handle NaN
-                        title_raw = row['title']
-                        if pd.isna(title_raw) or str(title_raw).strip() == '':
-                            continue  # Skip citations with empty titles
+                new_citations = []
+                for _, row in df.iterrows():
+                    # Normalize title: strip spaces, clean special characters, handle NaN
+                    title_raw = row['title']
+                    if pd.isna(title_raw) or str(title_raw).strip() == '':
+                        continue  # Skip citations with empty titles
 
-                        title_clean = str(title_raw).strip()
+                    title_clean = str(title_raw).strip()
+                    # Remove excessive whitespace and normalize
+                    title_clean = re.sub(r'\s+', ' ', title_clean)
+
+                    # Normalize abstract: strip spaces, clean special characters, handle NaN
+                    abstract_raw = row['abstract']
+                    if pd.isna(abstract_raw):
+                        abstract_clean = ""
+                    else:
+                        abstract_clean = str(abstract_raw).strip()
                         # Remove excessive whitespace and normalize
-                        title_clean = re.sub(r'\s+', ' ', title_clean)
+                        abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
 
-                        # Normalize abstract: strip spaces, clean special characters, handle NaN
-                        abstract_raw = row['abstract']
-                        if pd.isna(abstract_raw):
-                            abstract_clean = ""
-                        else:
-                            abstract_clean = str(abstract_raw).strip()
-                            # Remove excessive whitespace and normalize
-                            abstract_clean = re.sub(r'\s+', ' ', abstract_clean)
+                    # Skip citations with empty abstracts as they're not useful
+                    if abstract_clean == "":
+                        continue
 
-                        # Skip citations with empty abstracts as they're not useful
-                        if abstract_clean == "":
-                            continue
-
-                        citation = Citation(
-                            title=title_clean,
-                            abstract=abstract_clean,
-                            project_id=project_id,
-                            iteration=project.current_iteration
-                        )
-                        new_citations.append(citation)
-                else:
-                    # Use the processed citations from duplicate detection
-                    new_citations = duplicate_result['citations']
-                    duplicates_removed = duplicate_result['duplicates_removed']
-                    removal_strategy = duplicate_result['removal_strategy']
-                    duplicate_details = duplicate_result['duplicate_details']
-                    
-                    # Update project with duplicate processing results
-                    project.duplicates_removed = True
-                    project.duplicates_count = duplicates_removed
-                    project.removal_strategy = removal_strategy
-                    project.duplicate_details = duplicate_details
-                    project.detection_method_used = "Enhanced TF-IDF with column standardization"
-                    project.columns_standardized = True
-                    
-                    # Count resolution strategies used
-                    year_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'year_resolution')
-                    abstract_resolution_count = sum(1 for detail in duplicate_details if detail.get('type') == 'abstract_resolution')
-                    
-                    project.year_resolution_count = year_resolution_count
-                    project.abstract_resolution_count = abstract_resolution_count
+                    citation = Citation(
+                        title=title_clean,
+                        abstract=abstract_clean,
+                        project_id=project_id,
+                        iteration=project.current_iteration
+                    )
+                    new_citations.append(citation)
 
                 # Update project status after successful upload
                 project.citations_count = len(new_citations)
@@ -1845,23 +1823,17 @@ def add_citations(project_id):
                 db.session.bulk_save_objects(new_citations)
                 db.session.commit()
 
-                # Prepare response message based on whether duplicates were processed
-                if duplicate_result.get('error'):
-                    response_message = f"Added {len(new_citations)} citations (duplicate processing failed, using fallback)"
-                    duplicates_removed_status = False
-                else:
-                    duplicates_removed_count = duplicate_result.get('duplicates_removed', 0)
-                    response_message = f"Added {len(new_citations)} citations with {duplicates_removed_count} duplicates automatically removed"
-                    duplicates_removed_status = True
+                # Prepare response message for citations added without duplicate processing
+                response_message = f"Added {len(new_citations)} citations (duplicates will be handled manually)"
                 
                 return jsonify({
                     "message": response_message,
                     "total_citations": len(new_citations),
-                    "note": "Duplicates were automatically processed during upload" if duplicates_removed_status else "Duplicate processing failed, manual review recommended",
+                    "note": "Use the 'Remove Duplicates' button to process duplicates manually",
                     
                     # Status information for frontend
                     "citations_count": len(new_citations),
-                    "duplicates_removed": duplicates_removed_status,
+                    "duplicates_removed": False,  # No automatic duplicate removal
                     "keywords_selected": project.keywords_selected,
                     
                     # Enhanced duplicate processing details
