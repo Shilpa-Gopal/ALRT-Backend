@@ -2116,7 +2116,8 @@ def get_keywords(project_id):
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
-    citations = Citation.query.filter_by(project_id=project_id).all()
+    # Exclude citations marked as duplicates
+    citations = Citation.query.filter_by(project_id=project_id, is_duplicate=False).all()
     if not citations:
         return jsonify({"error": "No citations found"}), 404
 
@@ -2227,6 +2228,9 @@ def filter_citations(project_id):
     # Apply keyword filtering
     filtered_citations = apply_keyword_filtering(citations, project)
 
+    # Build included/excluded sets
+    included_ids = {c.id for c in filtered_citations}
+
     # NEW: Get relevance scores and sort accordingly
     if filtered_citations:
         try:
@@ -2252,23 +2256,38 @@ def filter_citations(project_id):
             # Extract sorted citations
             sorted_citations = [item['citation'] for item in citations_with_scores]
             
-            # Prepare response with scores included
-            citations_response = []
+            # Prepare included (sorted) with scores
+            included_response = []
             for item in citations_with_scores:
                 citation = item['citation']
-                citations_response.append({
+                included_response.append({
                     "id": citation.id,
                     "title": citation.title,
                     "abstract": citation.abstract,
                     "is_relevant": citation.is_relevant,
                     "iteration": citation.iteration,
                     "is_duplicate": getattr(citation, 'is_duplicate', False),
-                    "relevance_score": round(item['relevance_score'], 4)  # Include score in response
+                    "relevance_score": round(item['relevance_score'], 4),
+                    "included_by_keywords": True
                 })
+
+            # Append excluded (no scores)
+            excluded_response = [{
+                "id": c.id,
+                "title": c.title,
+                "abstract": c.abstract,
+                "is_relevant": c.is_relevant,
+                "iteration": c.iteration,
+                "is_duplicate": getattr(c, 'is_duplicate', False),
+                "relevance_score": None,
+                "included_by_keywords": False
+            } for c in citations if c.id not in included_ids]
+
+            citations_response = included_response + excluded_response
 
         except Exception as e:
             app.logger.warning(f"Could not calculate relevance scores: {str(e)}")
-            # Fallback to original citations without scores
+            # Fallback: all citations, included flagged, no scores
             citations_response = [{
                 "id": c.id,
                 "title": c.title,
@@ -2276,18 +2295,20 @@ def filter_citations(project_id):
                 "is_relevant": c.is_relevant,
                 "iteration": c.iteration,
                 "is_duplicate": getattr(c, 'is_duplicate', False),
-                "relevance_score": None
-            } for c in filtered_citations]
+                "relevance_score": None,
+                "included_by_keywords": (c.id in included_ids)
+            } for c in citations]
     else:
+        # No citations after filters: return empty
         citations_response = []
 
     return jsonify({
-        "citations": citations_response,
+        "citations": citations_response,  # all non-duplicate citations with included_by_keywords flag
         "total_before_filtering": len(citations),
         "total_after_filtering": len(filtered_citations),
         "filtered_by_keywords": len(citations) - len(filtered_citations),
         "sort_order": sort_order,  # NEW: Include current sort order in response
-        "sort_available": len(citations_response) > 0 and citations_response[0].get('relevance_score') is not None
+        "sort_available": any(item.get('relevance_score') is not None for item in citations_response)
     })
 
 
