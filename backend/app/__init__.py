@@ -29,19 +29,16 @@ def create_app():
         }
     }
 
+    frontend_origin = os.getenv('FRONTEND_URL', 'http://localhost:5173')
     CORS(app,
          resources={
              r"/api/*": {
-                 "origins":
-                 "*",
+                 "origins": [frontend_origin, 'http://localhost:5173'],
                  "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-                 "allow_headers":
-                 ["Content-Type", "X-User-Id", "Accept", "Authorization"],
+                 "allow_headers": ["Content-Type", "X-User-Id", "Accept", "Authorization"],
                  "expose_headers": ["Content-Type"],
-                 "supports_credentials":
-                 True,
-                 "max_age":
-                 3600
+                 "supports_credentials": True,
+                 "max_age": 3600
              }
          })
     db.init_app(app)

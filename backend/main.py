@@ -500,6 +500,48 @@ with app.app_context():
         app.logger.error(f"Migration error for enhanced duplicate detection: {str(e)}")
         db.session.rollback()
 
+    # Migration: Add custom duplicate configuration fields
+    try:
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'project' AND column_name IN 
+            ('duplicate_config', 'available_columns')
+        """)).fetchall()
+        existing_columns = [row[0] for row in result]
+
+        if 'duplicate_config' not in existing_columns:
+            app.logger.info("Adding duplicate_config column to project table")
+            # Add without a default to avoid JSON parsing issues; app will handle None
+            db.session.execute(text("ALTER TABLE project ADD COLUMN duplicate_config JSON"))
+
+        if 'available_columns' not in existing_columns:
+            app.logger.info("Adding available_columns column to project table")
+            db.session.execute(text("ALTER TABLE project ADD COLUMN available_columns JSON DEFAULT '[]'"))
+
+        db.session.commit()
+        app.logger.info("Migration completed: Custom duplicate configuration fields added")
+    except Exception as e:
+        app.logger.error(f"Migration error for custom duplicate config: {str(e)}")
+        db.session.rollback()
+
+    # Migration: Add citation.metadata JSON column
+    try:
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'citation' AND column_name = 'metadata'
+        """
+        )).fetchall()
+        if not result:
+            app.logger.info("Adding metadata column to citation table")
+            db.session.execute(text("ALTER TABLE citation ADD COLUMN metadata JSON DEFAULT '{}'"))
+            db.session.commit()
+            app.logger.info("Migration completed: metadata column added to citation")
+    except Exception as e:
+        app.logger.error(f"Migration error for citation.metadata: {str(e)}")
+        db.session.rollback()
+
 
 
 
@@ -1783,6 +1825,7 @@ def add_citations(project_id):
                 app.logger.info(f"Processing {len(df)} citations WITHOUT automatic duplicate detection")
                 
                 new_citations = []
+                all_metadata_keys = set()
                 for _, row in df.iterrows():
                     # Normalize title: strip spaces, clean special characters, handle NaN
                     title_raw = row['title']
@@ -1806,11 +1849,18 @@ def add_citations(project_id):
                     if abstract_clean == "":
                         continue
 
+                    # Build metadata from remaining columns
+                    row_dict = {k: (None if pd.isna(v) else v) for k, v in row.items()}
+                    core_fields = {'title', 'abstract'}
+                    metadata = {k: str(v) for k, v in row_dict.items() if k not in core_fields and v is not None}
+                    all_metadata_keys.update(metadata.keys())
+
                     citation = Citation(
                         title=title_clean,
                         abstract=abstract_clean,
                         project_id=project_id,
-                        iteration=project.current_iteration
+                        iteration=project.current_iteration,
+                        extra_metadata=metadata
                     )
                     new_citations.append(citation)
 
@@ -1821,6 +1871,9 @@ def add_citations(project_id):
                 project.keywords_selected = bool(project.keywords.get('include') or project.keywords.get('exclude'))
                 
                 db.session.bulk_save_objects(new_citations)
+                # Update available_columns cache on project
+                available = sorted(set(list(all_metadata_keys) + ['title', 'abstract']))
+                project.available_columns = available
                 db.session.commit()
 
                 # Prepare response message for citations added without duplicate processing
@@ -2185,6 +2238,40 @@ def update_keywords(project_id):
     return jsonify({
         "keywords": project.keywords,
         "keywords_selected": project.keywords_selected
+    })
+
+
+@app.route('/api/projects/<int:project_id>/duplicate-options', methods=['GET', 'OPTIONS'])
+def get_duplicate_options(project_id):
+    # Handle preflight
+    if request.method == 'OPTIONS':
+        return ('', 200)
+
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    user_id_int = int(user_id)
+    user = User.query.get(user_id_int)
+    if not user:
+        return jsonify({"error": "User not found"}), 401
+
+    # Allow admin access to any project, regular users only their own
+    if user.is_admin:
+        project = Project.query.get(project_id)
+    else:
+        project = Project.query.filter_by(id=project_id, user_id=user_id_int).first()
+
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Fallbacks
+    available_columns = project.available_columns or ['title', 'abstract']
+    current_config = project.duplicate_config or {"mode": "default", "columns": [], "threshold": 0.9}
+
+    return jsonify({
+        "available_columns": available_columns,
+        "current_config": current_config
     })
 
 
@@ -2712,17 +2799,24 @@ def remove_duplicates(project_id):
 
         app.logger.info(f"Starting advanced duplicate removal for project {project_id} with {len(citations)} citations")
 
-        # Convert citations to DataFrame for easier processing
+        # Convert citations to DataFrame for easier processing (include metadata)
         citations_data = []
         for i, citation in enumerate(citations):
-            citations_data.append({
+            row = {
                 'id': citation.id,
                 'title': citation.title,
                 'abstract': citation.abstract,
                 'is_relevant': citation.is_relevant,
                 'iteration': citation.iteration,
                 'index': i
-            })
+            }
+            if getattr(citation, 'extra_metadata', None):
+                # Merge metadata keys as columns
+                for k, v in citation.extra_metadata.items():
+                    # Avoid overwriting core fields
+                    if k not in row:
+                        row[k] = v
+            citations_data.append(row)
 
         df = pd.DataFrame(citations_data)
 
@@ -2732,18 +2826,39 @@ def remove_duplicates(project_id):
         # Standardize the DataFrame columns
         df_standardized = standardize_dataframe_columns(df.copy())
         
-        # Check if we have author and year information
+        # Parse custom config from body (optional)
+        body = request.get_json(silent=True) or {}
+        mode = (body.get('mode') or (project.duplicate_config or {}).get('mode') or 'default').lower()
+        selected_columns = body.get('columns') or (project.duplicate_config or {}).get('columns') or []
+        threshold = float(body.get('threshold') or (project.duplicate_config or {}).get('threshold') or 0.9)
+        year_field = body.get('year_field') or (project.duplicate_config or {}).get('year_field') or 'publication_year'
+
+        # Persist config on project
+        project.duplicate_config = {
+            'mode': mode,
+            'columns': selected_columns,
+            'threshold': threshold,
+            'year_field': year_field
+        }
+
+        # Check if we have author and year information (default mode path)
         has_authors = 'authors' in df_standardized.columns and not df_standardized['authors'].isna().all()
-        has_year = 'publication_year' in df_standardized.columns and not df_standardized['publication_year'].isna().all()
+        has_year = year_field in df_standardized.columns and not df_standardized[year_field].isna().all()
         
         app.logger.info(f"Enhanced duplicate detection: Authors present: {has_authors}, Year present: {has_year}")
         
-        # Apply the new enhanced duplicate processing logic
-        app.logger.info(f"Calling enhanced duplicate processing with DataFrame: {df_standardized.shape}")
+        # Apply duplicate processing based on mode
+        app.logger.info(f"Duplicate mode: {mode}; threshold={threshold}; columns={selected_columns}")
+        app.logger.info(f"Calling duplicate processing with DataFrame: {df_standardized.shape}")
         app.logger.info(f"DataFrame columns: {list(df_standardized.columns)}")
         app.logger.info(f"Sample data - First row: {df_standardized.iloc[0].to_dict() if len(df_standardized) > 0 else 'Empty'}")
-        
-        result = process_enhanced_duplicates(df_standardized, has_authors, has_year)
+
+        if mode == 'custom' and selected_columns:
+            result = process_custom_duplicates(df_standardized, selected_columns, threshold, year_field)
+            strategy_used = f"Custom TF-IDF on {selected_columns} at {threshold}"
+        else:
+            result = process_enhanced_duplicates(df_standardized, has_authors, has_year)
+            strategy_used = result.get('strategy', 'Enhanced default')
         
         if result['error']:
             app.logger.error(f"Enhanced duplicate processing failed: {result['error']}")
@@ -2800,8 +2915,8 @@ def remove_duplicates(project_id):
         else:
             # New enhanced system
             project.duplicate_details = make_json_serializable(result['duplicate_details'])
-            project.removal_strategy = result['strategy']
-            project.detection_method_used = "Enhanced TF-IDF with column standardization"
+            project.removal_strategy = strategy_used
+            project.detection_method_used = "Custom TF-IDF" if mode == 'custom' and selected_columns else "Enhanced TF-IDF with column standardization"
             project.columns_standardized = True
             
             # Count resolution strategies used
@@ -2839,18 +2954,19 @@ def remove_duplicates(project_id):
                 "message": f"Enhanced duplicate detection completed",
                 "duplicates_marked": duplicates_marked,
                 "unique_citations": len(citations_to_keep),
-                "removal_strategy": result['strategy'],
+                "removal_strategy": strategy_used,
                 "duplicate_details": result['duplicate_details'][:10],
                 "processing_summary": {
-                    "detection_method": "Enhanced TF-IDF with column standardization",
+                    "detection_method": "Custom TF-IDF" if mode == 'custom' and selected_columns else "Enhanced TF-IDF with column standardization",
                     "duplicates_found": len(result['duplicate_details']),
-                    "strategy_used": result['strategy']
+                    "strategy_used": strategy_used
                 },
                 
                 # Status fields for frontend
                 "duplicates_removed": True,
                 "duplicates_count": duplicates_marked,
-                "citations_count": len(citations_to_keep)
+                "citations_count": len(citations_to_keep),
+                "duplicate_config_used": project.duplicate_config
             }
             
             app.logger.info(f"Enhanced system response - duplicate_details count: {len(result['duplicate_details'])}")
@@ -3451,6 +3567,76 @@ def find_column_by_patterns(df, patterns):
             if pattern.lower() in col.lower():
                 return col
     return None
+
+# Helpers for custom duplicate detection
+def build_similarity_text(row, selected_columns):
+    parts = []
+    for col in selected_columns:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        parts.append(str(value))
+    return ' '.join(parts)
+
+def process_custom_duplicates(df, selected_columns, threshold, year_field):
+    """Detect duplicates using custom-selected columns for TF-IDF similarity."""
+    duplicate_details = []
+    citations_to_keep = []
+
+    # Ensure selected columns exist; quietly ignore missing
+    cols = [c for c in selected_columns if c in df.columns]
+    if not cols:
+        return {
+            'citations_to_keep': [df.iloc[i] for i in range(len(df))],
+            'duplicate_details': [{'error': 'No valid columns provided for custom detection'}],
+            'strategy': 'Custom columns - no-op'
+        }
+
+    df = df.copy()
+    df['combined_text'] = df.apply(lambda r: build_similarity_text(r, cols), axis=1)
+
+    vectorizer = TfidfVectorizer(
+        max_features=1000,
+        stop_words='english',
+        ngram_range=(1, 2),
+        min_df=1
+    )
+
+    try:
+        tfidf_matrix = vectorizer.fit_transform(df['combined_text'].fillna(''))
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+
+        processed_indices = set()
+        for i in range(len(df)):
+            if i in processed_indices:
+                continue
+            similar_indices = [i]
+            for j in range(i + 1, len(df)):
+                if j not in processed_indices and similarity_matrix[i][j] >= float(threshold):
+                    similar_indices.append(j)
+
+            if len(similar_indices) > 1:
+                group = df.iloc[similar_indices]
+                has_year = (year_field in df.columns) and (not df[year_field].isna().all())
+                best_citation = resolve_duplicates_by_strategy(group, has_year, duplicate_details)
+                citations_to_keep.append(best_citation)
+                processed_indices.update(similar_indices)
+            else:
+                citations_to_keep.append(df.iloc[i])
+                processed_indices.add(i)
+
+        return {
+            'citations_to_keep': citations_to_keep,
+            'duplicate_details': duplicate_details,
+            'strategy': f'Custom TF-IDF on {cols} at {threshold}'
+        }
+    except Exception as e:
+        app.logger.error(f"Error in custom duplicate detection: {str(e)}")
+        return {
+            'citations_to_keep': [df.iloc[i] for i in range(len(df))],
+            'duplicate_details': [{'error': f'Custom detection failed: {str(e)}'}],
+            'strategy': 'Custom - error fallback'
+        }
 
 # At the end of your main.py file:
 if __name__ == "__main__":

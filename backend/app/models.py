@@ -37,6 +37,10 @@ class Project(db.Model):
     abstract_resolution_count = db.Column(db.Integer, default=0)
     columns_standardized = db.Column(db.Boolean, default=False)
 
+    # NEW: Custom duplicate configuration and available columns cache
+    duplicate_config = db.Column(db.JSON, default=lambda: {"mode": "default", "columns": [], "threshold": 0.9})
+    available_columns = db.Column(db.JSON, default=list)
+
 class Citation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.Text, nullable=False)
@@ -45,3 +49,6 @@ class Citation(db.Model):
     is_relevant = db.Column(db.Boolean, nullable=True)
     iteration = db.Column(db.Integer, default=0)
     is_duplicate = db.Column(db.Boolean, default=False)
+    # NEW: Store additional uploaded fields for custom duplicate detection
+    # Use attribute name 'extra_metadata' to avoid conflict with SQLAlchemy's reserved 'metadata'
+    extra_metadata = db.Column('metadata', db.JSON, default=dict)
