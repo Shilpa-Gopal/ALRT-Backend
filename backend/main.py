@@ -1322,7 +1322,7 @@ def verify_reset_token():
 # for acception of multiple files from users
 def validate_file_format(filename):
     """Validate if file format is supported"""
-    return filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml'))
+    return filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris'))
 
 def process_single_file(file, temp_dir):
     """Process a single file and return DataFrame"""
@@ -1341,6 +1341,8 @@ def process_single_file(file, temp_dir):
             df = parse_enw_to_dataframe(temp_path, filename)
         elif filename.lower().endswith('.xml'):
             df = parse_xml_to_dataframe(temp_path, filename)
+        elif filename.lower().endswith('.ris'):
+            df = parse_ris_to_dataframe(temp_path, filename)
         else:
             raise ValueError(f"Unsupported file format: {filename}")
         
@@ -1521,6 +1523,117 @@ def parse_xml_to_dataframe(path, source_filename):
         return df
     except Exception as e:
         raise ValueError(f"Failed to parse XML file: {str(e)}")
+
+def parse_ris_to_dataframe(path, source_filename):
+    """
+    Parse .ris (RIS format) into a DataFrame with 'title' and 'abstract'.
+    Common tags:
+      TY - Type (record start)
+      ER - End of record
+      TI / T1 - Title
+      AB / N2 - Abstract
+      AU - Author
+      JO / JF - Journal
+      PY / Y1 - Year/Date
+      KW - Keyword
+      DO - DOI
+    """
+    records = []
+    current = {
+        'title': '',
+        'abstract': '',
+        'authors': []
+    }
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for raw_line in f:
+                line = raw_line.rstrip('\n')
+                if not line.strip():
+                    continue
+
+                # End of record
+                if line.startswith('ER'):
+                    if current.get('title') or current.get('abstract'):
+                        rec = {
+                            'title': current.get('title', '').strip(),
+                            'abstract': current.get('abstract', '').strip(),
+                            'authors': '; '.join(current.get('authors', [])),
+                            'journal': current.get('journal', '').strip(),
+                            'date': current.get('date', '').strip(),
+                            'doi': current.get('doi', '').strip(),
+                            'keywords': current.get('keywords', '').strip()
+                        }
+                        records.append(rec)
+                    current = {'title': '', 'abstract': '', 'authors': []}
+                    continue
+
+                # Start of record
+                if line.startswith('TY'):
+                    # If previous record had content but no ER, flush it
+                    if current.get('title') or current.get('abstract'):
+                        rec = {
+                            'title': current.get('title', '').strip(),
+                            'abstract': current.get('abstract', '').strip(),
+                            'authors': '; '.join(current.get('authors', [])),
+                            'journal': current.get('journal', '').strip(),
+                            'date': current.get('date', '').strip(),
+                            'doi': current.get('doi', '').strip(),
+                            'keywords': current.get('keywords', '').strip()
+                        }
+                        records.append(rec)
+                    current = {'title': '', 'abstract': '', 'authors': []}
+                    continue
+
+                # Parse tag-value lines: "XX  - value"
+                if ' - ' in line and len(line) >= 6:
+                    tag = line[:2]
+                    content = line.split(' - ', 1)[1].strip()
+
+                    # Multi-line handling: repeated tags append content
+                    if tag in ('TI', 'T1'):
+                        current['title'] = (current.get('title', '') + (' ' if current.get('title') else '') + content).strip()
+                    elif tag in ('AB', 'N2'):
+                        current['abstract'] = (current.get('abstract', '') + (' ' if current.get('abstract') else '') + content).strip()
+                    elif tag == 'AU':
+                        if content:
+                            current.setdefault('authors', []).append(content)
+                    elif tag in ('JO', 'JF'):
+                        current['journal'] = content
+                    elif tag in ('PY', 'Y1'):
+                        current['date'] = content
+                    elif tag == 'KW':
+                        prev = current.get('keywords', '')
+                        current['keywords'] = (prev + '; ' + content).strip('; ').strip() if prev else content
+                    elif tag == 'DO':
+                        current['doi'] = content
+                    # Ignore other tags safely
+                    continue
+
+                # Continuation lines without tag (rare) - append to abstract
+                if current.get('abstract'):
+                    current['abstract'] = (current['abstract'] + ' ' + line.strip()).strip()
+                elif current.get('title'):
+                    current['title'] = (current['title'] + ' ' + line.strip()).strip()
+
+        # Flush last record if needed
+        if current.get('title') or current.get('abstract'):
+            rec = {
+                'title': current.get('title', '').strip(),
+                'abstract': current.get('abstract', '').strip(),
+                'authors': '; '.join(current.get('authors', [])),
+                'journal': current.get('journal', '').strip(),
+                'date': current.get('date', '').strip(),
+                'doi': current.get('doi', '').strip(),
+                'keywords': current.get('keywords', '').strip()
+            }
+            records.append(rec)
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df['source_file'] = source_filename
+        return df
+    except Exception as e:
+        raise ValueError(f"Failed to parse RIS file: {str(e)}")
 
 def merge_multiple_files(files):
     """Process and merge multiple files into a single DataFrame"""
@@ -1923,10 +2036,10 @@ def add_citations(project_id):
                 app.logger.error("No file provided or empty filename")
                 return jsonify({"error": "No file provided"}), 400
 
-            if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml')):
+            if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris')):
                 app.logger.error(f"Invalid file format: {file.filename}")
                 return jsonify({
-                    "error": "Invalid file format. Supported: CSV, Excel, EndNote (.enw), and XML.",
+                    "error": "Invalid file format. Supported: CSV, Excel, EndNote (.enw), XML, and RIS (.ris).",
                     "filename": file.filename
                 }), 400
 
