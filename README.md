@@ -216,3 +216,7 @@ If you encounter issues not covered in this guide:
 ---
 
 *This documentation covers the complete workflow of the Automated Literature Review Tool. For technical support or feature requests, contact your system administrator.*
+
+
+run project: 
+DATABASE_URL="postgresql://postgres:ipGawFDazQcvlvBVLKHSszJZnBoZMHoT@yamabiko.proxy.rlwy.net:51503/railway" python backend/main.py
