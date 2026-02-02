@@ -1266,7 +1266,7 @@ def verify_reset_token():
 # for acception of multiple files from users
 def validate_file_format(filename):
     """Validate if file format is supported"""
-    return filename.lower().endswith(('.csv', '.xlsx', '.xls'))
+    return filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml'))
 
 def process_single_file(file, temp_dir):
     """Process a single file and return DataFrame"""
@@ -1281,6 +1281,10 @@ def process_single_file(file, temp_dir):
             df = pd.read_csv(temp_path)
         elif filename.endswith(('.xlsx', '.xls')):
             df = pd.read_excel(temp_path, engine='openpyxl')
+        elif filename.lower().endswith('.enw'):
+            df = parse_enw_to_dataframe(temp_path, filename)
+        elif filename.lower().endswith('.xml'):
+            df = parse_xml_to_dataframe(temp_path, filename)
         else:
             raise ValueError(f"Unsupported file format: {filename}")
         
@@ -1302,6 +1306,165 @@ def process_single_file(file, temp_dir):
         # Clean up temp file
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+def parse_enw_to_dataframe(path, source_filename):
+    """
+    Parse EndNote .enw (tagged) export into a DataFrame with at least 'title' and 'abstract'.
+    Common tags:
+      %T Title
+      %X Abstract
+      %A Author
+      %J Journal
+      %D Year
+      %K Keywords
+      %R DOI
+    Records are typically separated by blank lines.
+    """
+    records = []
+    current = {
+        'title': '',
+        'abstract': '',
+        'authors': []
+    }
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for raw_line in f:
+                line = raw_line.rstrip('\n')
+                if line.strip() == '':
+                    # end of record
+                    if current.get('title') or current.get('abstract'):
+                        rec = {
+                            'title': current.get('title', '').strip(),
+                            'abstract': current.get('abstract', '').strip(),
+                            'authors': '; '.join(current.get('authors', [])),
+                            'journal': current.get('journal', '').strip(),
+                            'date': current.get('date', '').strip(),
+                            'doi': current.get('doi', '').strip(),
+                            'keywords': current.get('keywords', '').strip()
+                        }
+                        records.append(rec)
+                    current = {'title': '', 'abstract': '', 'authors': []}
+                    continue
+
+                if not line.startswith('%'):
+                    # Some exports may wrap lines; append to last field if present
+                    if current.get('_last_tag') == 'X':
+                        current['abstract'] = (current.get('abstract', '') + ' ' + line).strip()
+                    elif current.get('_last_tag') == 'T':
+                        current['title'] = (current.get('title', '') + ' ' + line).strip()
+                    continue
+
+                # Example: "%T Title text"
+                tag = line[1:2]
+                content = line[3:].strip() if len(line) > 3 and line[2] == ' ' else line[2:].strip()
+                current['_last_tag'] = tag
+
+                if tag == 'T':
+                    current['title'] = (current.get('title', '') + (' ' if current.get('title') else '') + content).strip()
+                elif tag == 'X':
+                    current['abstract'] = (current.get('abstract', '') + (' ' if current.get('abstract') else '') + content).strip()
+                elif tag == 'A':
+                    if 'authors' not in current:
+                        current['authors'] = []
+                    if content:
+                        current['authors'].append(content)
+                elif tag == 'J':
+                    current['journal'] = content
+                elif tag == 'D':
+                    current['date'] = content
+                elif tag == 'K':
+                    # Keep as a single string; merging/standardizing later
+                    prev = current.get('keywords', '')
+                    current['keywords'] = (prev + '; ' + content).strip('; ').strip() if prev else content
+                elif tag == 'R':
+                    current['doi'] = content
+
+        # Flush last record if file doesn't end with a blank line
+        if current.get('title') or current.get('abstract'):
+            rec = {
+                'title': current.get('title', '').strip(),
+                'abstract': current.get('abstract', '').strip(),
+                'authors': '; '.join(current.get('authors', [])),
+                'journal': current.get('journal', '').strip(),
+                'date': current.get('date', '').strip(),
+                'doi': current.get('doi', '').strip(),
+                'keywords': current.get('keywords', '').strip()
+            }
+            records.append(rec)
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df['source_file'] = source_filename
+        return df
+    except Exception as e:
+        raise ValueError(f"Failed to parse ENW file: {str(e)}")
+
+def parse_xml_to_dataframe(path, source_filename):
+    """
+    Parse .xml exports into a DataFrame with 'title' and 'abstract'.
+    Supports:
+      - PubMed XML (<PubmedArticle> with <ArticleTitle> and <AbstractText>)
+      - EndNote XML (<record> with <titles><title> and <abstract>)
+    """
+    try:
+        import xml.etree.ElementTree as ET
+
+        def localname(tag):
+            # Strip namespace if present
+            return tag.split('}', 1)[-1] if '}' in tag else tag
+
+        def text_content(elem):
+            if elem is None:
+                return ''
+            return ' '.join(list(elem.itertext())).strip()
+
+        tree = ET.parse(path)
+        root = tree.getroot()
+
+        rows = []
+
+        # Detect PubMed XML
+        pubmed_articles = [el for el in root.iter() if localname(el.tag) == 'PubmedArticle']
+        if pubmed_articles:
+            for pa in pubmed_articles:
+                # ArticleTitle
+                title_el = None
+                abstract_texts = []
+                for el in pa.iter():
+                    ln = localname(el.tag)
+                    if ln == 'ArticleTitle' and title_el is None:
+                        title_el = el
+                    if ln == 'AbstractText':
+                        txt = text_content(el)
+                        if txt:
+                            abstract_texts.append(txt)
+                title = text_content(title_el)
+                abstract = ' '.join(abstract_texts).strip()
+                if title:
+                    rows.append({'title': title, 'abstract': abstract})
+        else:
+            # Try EndNote XML: <record> with <titles><title> and <abstract>
+            records = [el for el in root.iter() if localname(el.tag) == 'record']
+            for rec in records:
+                title_el = None
+                abstract_el = None
+                for el in rec.iter():
+                    ln = localname(el.tag)
+                    if ln == 'title' and title_el is None:
+                        title_el = el
+                    if ln == 'abstract' and abstract_el is None:
+                        abstract_el = el
+                title = text_content(title_el)
+                abstract = text_content(abstract_el)
+                if title:
+                    rows.append({'title': title, 'abstract': abstract})
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df['source_file'] = source_filename
+        return df
+    except Exception as e:
+        raise ValueError(f"Failed to parse XML file: {str(e)}")
 
 def merge_multiple_files(files):
     """Process and merge multiple files into a single DataFrame"""
@@ -1656,50 +1819,31 @@ def add_citations(project_id):
                 app.logger.error("No file provided or empty filename")
                 return jsonify({"error": "No file provided"}), 400
 
-            if not file.filename.endswith(('.csv', '.xlsx')):
+            if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml')):
                 app.logger.error(f"Invalid file format: {file.filename}")
                 return jsonify({
-                    "error": "Invalid file format. Only CSV and Excel files are supported.",
+                    "error": "Invalid file format. Supported: CSV, Excel, EndNote (.enw), and XML.",
                     "filename": file.filename
                 }), 400
 
             app.logger.info(f"Processing file: {file.filename} ({file.content_length} bytes)")
 
             try:
-                app.logger.info(f"Attempting to process file: {file.filename}")
-                # Save the file temporarily
-                temp_path = os.path.join('/tmp', secure_filename(file.filename))
-                file.save(temp_path)
-                app.logger.info(f"Saved file temporarily: {temp_path}")
-
-                try:
-                    if file.filename.endswith('.csv'):
-                        app.logger.info("Processing CSV file")
-                        df = pd.read_csv(temp_path)
-                    elif file.filename.endswith('.xlsx'):
-                        app.logger.info("Processing Excel file")
-                        df = pd.read_excel(temp_path, engine='openpyxl')
-                        app.logger.info(f"Excel file read successfully with {len(df)} rows")
-                    else:
-                        app.logger.error(f"Unsupported file format: {file.filename}")
-                        return jsonify({
-                            "error": "Unsupported file format",
-                            "details": f"File {file.filename} is not supported. Only .csv and .xlsx files are allowed"
-                        }), 400
-                    # Check file size limits for performance
-                    if len(df) > 50000:
-                        return jsonify({
-                            "error": "File too large",
-                            "details": f"File contains {len(df)} rows. Maximum supported is 50,000 rows for optimal performance."
-                        }), 400
-
-                    # Clean up temp file
-                    os.remove(temp_path)
-                except Exception as e:
-                    app.logger.error(f"File read error: {str(e)}")
+                # Use the same single-file processing pipeline as multi-upload
+                temp_dir = '/tmp/single_upload'
+                os.makedirs(temp_dir, exist_ok=True)
+                df, error = process_single_file(file, temp_dir)
+                if error:
+                    app.logger.error(f"File read error: {error}")
                     return jsonify({
                         "error": "Failed to read file",
-                        "details": str(e)
+                        "details": error
+                    }), 400
+                # Check file size limits for performance
+                if len(df) > 50000:
+                    return jsonify({
+                        "error": "File too large",
+                        "details": f"File contains {len(df)} rows. Maximum supported is 50,000 rows for optimal performance."
                     }), 400
 
                 if df.empty:
