@@ -2341,36 +2341,66 @@ def train_model(project_id):
             if not should_exclude:
                 filtered_citations.append(citation)
 
-        if len(filtered_citations) < 10:
+        # For iteration gating: only consider labels added in the CURRENT iteration
+        current_iteration = project.current_iteration
+        current_iter_labeled = [c for c in filtered_citations if c.iteration == current_iteration]
+
+        # Require at least 10 labels in THIS iteration (balanced checks below)
+        if len(current_iter_labeled) < 10:
             return jsonify({
-                "error": f"Need at least 10 user-labeled citations (excluding duplicates and keyword-filtered) to train. Currently have {len(filtered_citations)} valid labeled citations. Total user-labeled: {len(user_labeled_citations)}, Keyword-excluded: {keyword_excluded_count}"
+                "error": (
+                    "Need at least 10 user-labeled citations in this iteration "
+                    f"(excluding duplicates and keyword-filtered). Currently have {len(current_iter_labeled)}. "
+                    f"Total labeled across all iterations: {len(filtered_citations)}"
+                )
             }), 400
 
-        # Count relevant and irrelevant citations from filtered set
-        relevant_count = sum(1 for c in filtered_citations if c.is_relevant == True)
-        irrelevant_count = sum(1 for c in filtered_citations if c.is_relevant == False)
+        # Count relevant and irrelevant citations FROM THIS ITERATION ONLY
+        relevant_count_iter = sum(1 for c in current_iter_labeled if c.is_relevant is True)
+        irrelevant_count_iter = sum(1 for c in current_iter_labeled if c.is_relevant is False)
 
         # NEW validation:
         MIN_LABELS_PER_CATEGORY = 5
         MAX_LABELS_PER_CATEGORY = 10
 
-        if relevant_count < MIN_LABELS_PER_CATEGORY or irrelevant_count < MIN_LABELS_PER_CATEGORY:
+        # Enforce per-iteration balance
+        if (relevant_count_iter < MIN_LABELS_PER_CATEGORY or
+                irrelevant_count_iter < MIN_LABELS_PER_CATEGORY):
             return jsonify({
-                "error": f"Need at least {MIN_LABELS_PER_CATEGORY} relevant and {MIN_LABELS_PER_CATEGORY} irrelevant user-labeled citations (excluding duplicates and keyword-filtered). Currently have {relevant_count} relevant and {irrelevant_count} irrelevant from {len(filtered_citations)} valid citations."
+                "error": (
+                    f"Need at least {MIN_LABELS_PER_CATEGORY} relevant and "
+                    f"{MIN_LABELS_PER_CATEGORY} irrelevant user-labeled citations in this iteration "
+                    f"(excluding duplicates and keyword-filtered). Currently have "
+                    f"{relevant_count_iter} relevant and {irrelevant_count_iter} irrelevant in this iteration."
+                )
             }), 400
 
-        if relevant_count > MAX_LABELS_PER_CATEGORY or irrelevant_count > MAX_LABELS_PER_CATEGORY:
+        if (relevant_count_iter > MAX_LABELS_PER_CATEGORY or
+                irrelevant_count_iter > MAX_LABELS_PER_CATEGORY):
             return jsonify({
-                "error": f"Maximum {MAX_LABELS_PER_CATEGORY} citations per category allowed for balanced training. Currently have {relevant_count} relevant and {irrelevant_count} irrelevant. Please unlabel some citations before training."
+                "error": (
+                    f"Maximum {MAX_LABELS_PER_CATEGORY} citations per category allowed for balanced training "
+                    f"in this iteration. Currently have {relevant_count_iter} relevant and {irrelevant_count_iter} "
+                    f"irrelevant in this iteration. Please unlabel some citations before training."
+                )
             }), 400
 
-        # Update the minimum total citations check:
-        if len(filtered_citations) < (MIN_LABELS_PER_CATEGORY * 2):
+        # Optional: reinforce minimum total per-iteration check (duplicate of the 10 above but explicit)
+        if len(current_iter_labeled) < (MIN_LABELS_PER_CATEGORY * 2):
             return jsonify({
-                "error": f"Need at least {MIN_LABELS_PER_CATEGORY * 2} user-labeled citations total (excluding duplicates and keyword-filtered) to train. Currently have {len(filtered_citations)} valid labeled citations."
+                "error": (
+                    f"Need at least {MIN_LABELS_PER_CATEGORY * 2} user-labeled citations in this iteration "
+                    f"(excluding duplicates and keyword-filtered) to train. "
+                    f"Currently have {len(current_iter_labeled)} in this iteration."
+                )
             }), 400
 
-        app.logger.info(f"Training model for project {project_id} with {len(filtered_citations)} user-labeled citations ({relevant_count} relevant, {irrelevant_count} irrelevant). Excluded {keyword_excluded_count} due to keywords.")
+        app.logger.info(
+            "Training model for project %s with %s user-labeled citations across all iterations; "
+            "this iteration: %s labeled (%s relevant, %s irrelevant). Excluded %s due to keywords.",
+            project_id, len(filtered_citations), len(current_iter_labeled),
+            relevant_count_iter, irrelevant_count_iter, keyword_excluded_count
+        )
 
         review_system = LiteratureReviewSystem(project_id)
         result = review_system.train_iteration(project.current_iteration)
