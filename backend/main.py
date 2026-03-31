@@ -2461,17 +2461,28 @@ def get_keywords(project_id):
     if not citations:
         return jsonify({"error": "No citations found"}), 404
 
+    # Optional query param to control number of suggestions
+    DEFAULT_SUGGESTED = 200
+    MAX_SUGGESTED_CAP = 200
+    requested_max = request.args.get('max_suggested', type=int)
+    if requested_max is None or requested_max <= 0:
+        top_n = DEFAULT_SUGGESTED
+    else:
+        # Cap to avoid excessive payloads/compute
+        top_n = min(requested_max, MAX_SUGGESTED_CAP)
+
     # Combine titles and abstracts for TF-IDF
     texts = [f"{c.title} {c.abstract}" for c in citations]
-    vectorizer = TfidfVectorizer(max_features=70, stop_words='english')
+    # Use a feature budget at least as large as requested suggestions
+    vectorizer = TfidfVectorizer(max_features=max(top_n, 1000), stop_words='english')
     tfidf_matrix = vectorizer.fit_transform(texts)
 
     # Get feature names and their scores
     feature_names = vectorizer.get_feature_names_out()
     scores = tfidf_matrix.sum(axis=0).A1
 
-    # Get top 50 keywords by TF-IDF score but only return the words
-    top_indices = scores.argsort()[-50:][::-1]  
+    # Top-N keywords by TF-IDF score
+    top_indices = scores.argsort()[-top_n:][::-1]
     suggested_keywords = [{"word": feature_names[i]} for i in top_indices]
 
     return jsonify({
