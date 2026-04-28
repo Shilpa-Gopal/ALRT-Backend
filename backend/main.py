@@ -2698,6 +2698,180 @@ def filter_citations(project_id):
 
 
 
+_EXPORT_HEADERS = [
+    'Title', 'Abstract', 'Authors', 'Journal', 'Year', 'PMID', 'DOI',
+    'Label', 'Relevance Score', 'Iteration', 'Notes'
+]
+
+_METADATA_KEY_ALIASES = {
+    'authors': ('authors', 'author', 'au'),
+    'journal': ('journal', 'jt', 'source', 'publication', 'journal_title'),
+    'year': ('year', 'pub_year', 'publication_year', 'date', 'py'),
+    'pmid': ('pmid', 'pubmed_id'),
+    'doi': ('doi',),
+    'notes': ('notes', 'user_notes', 'exclusion_reason', 'reason'),
+}
+
+
+def _meta_lookup(meta, keys):
+    if not meta:
+        return ''
+    lower_map = {str(k).lower(): v for k, v in meta.items()}
+    for key in keys:
+        if key in lower_map and lower_map[key] not in (None, ''):
+            return str(lower_map[key])
+    return ''
+
+
+def _label_text(is_relevant):
+    if is_relevant is True:
+        return 'Relevant'
+    if is_relevant is False:
+        return 'Irrelevant'
+    return 'Unlabeled'
+
+
+def _build_export_rows(citations, predictions):
+    rows = []
+    for citation, prediction in zip(citations, predictions):
+        score = prediction.get('relevance_probability', 0) if 'error' not in prediction else 0
+        meta = citation.extra_metadata or {}
+        rows.append({
+            'title': citation.title or '',
+            'abstract': citation.abstract or '',
+            'authors': _meta_lookup(meta, _METADATA_KEY_ALIASES['authors']),
+            'journal': _meta_lookup(meta, _METADATA_KEY_ALIASES['journal']),
+            'year': _meta_lookup(meta, _METADATA_KEY_ALIASES['year']),
+            'pmid': _meta_lookup(meta, _METADATA_KEY_ALIASES['pmid']),
+            'doi': _meta_lookup(meta, _METADATA_KEY_ALIASES['doi']),
+            'label': _label_text(citation.is_relevant),
+            'is_relevant': citation.is_relevant,
+            'relevance_score': float(score),
+            'iteration': citation.iteration,
+            'notes': _meta_lookup(meta, _METADATA_KEY_ALIASES['notes']),
+        })
+    return rows
+
+
+def _serialize_xlsx(rows):
+    from openpyxl import Workbook
+    output = io.BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    for col, header in enumerate(_EXPORT_HEADERS, start=1):
+        ws.cell(row=1, column=col, value=header)
+    for r, data in enumerate(rows, start=2):
+        ws.cell(row=r, column=1, value=data['title'])
+        ws.cell(row=r, column=2, value=data['abstract'])
+        ws.cell(row=r, column=3, value=data['authors'])
+        ws.cell(row=r, column=4, value=data['journal'])
+        ws.cell(row=r, column=5, value=data['year'])
+        ws.cell(row=r, column=6, value=data['pmid'])
+        ws.cell(row=r, column=7, value=data['doi'])
+        ws.cell(row=r, column=8, value=data['label'])
+        ws.cell(row=r, column=9, value=data['relevance_score'])
+        ws.cell(row=r, column=10, value=data['iteration'])
+        ws.cell(row=r, column=11, value=data['notes'])
+    wb.save(output)
+    output.seek(0)
+    return output, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'
+
+
+def _serialize_csv(rows):
+    import csv
+    text_buf = io.StringIO()
+    writer = csv.writer(text_buf, quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(_EXPORT_HEADERS)
+    for d in rows:
+        writer.writerow([
+            d['title'], d['abstract'], d['authors'], d['journal'], d['year'],
+            d['pmid'], d['doi'], d['label'], d['relevance_score'],
+            d['iteration'], d['notes'],
+        ])
+    output = io.BytesIO(text_buf.getvalue().encode('utf-8-sig'))
+    return output, 'text/csv', 'csv'
+
+
+def _serialize_pubmed(rows):
+    """MEDLINE-style plain text. One record per blank-line-separated block."""
+    lines = []
+    for d in rows:
+        block = []
+        if d['pmid']:
+            block.append(f"PMID- {d['pmid']}")
+        if d['title']:
+            block.append(f"TI  - {d['title']}")
+        if d['abstract']:
+            block.append(f"AB  - {d['abstract']}")
+        if d['authors']:
+            for author in re.split(r'[;,]\s*', d['authors']):
+                author = author.strip()
+                if author:
+                    block.append(f"AU  - {author}")
+        if d['journal']:
+            block.append(f"JT  - {d['journal']}")
+        if d['year']:
+            block.append(f"DP  - {d['year']}")
+        if d['doi']:
+            block.append(f"AID - {d['doi']} [doi]")
+        block.append(f"OT  - Label: {d['label']}")
+        block.append(f"OT  - RelevanceScore: {d['relevance_score']:.4f}")
+        block.append(f"OT  - Iteration: {d['iteration']}")
+        if d['notes']:
+            block.append(f"GN  - {d['notes']}")
+        lines.append('\n'.join(block))
+    payload = ('\n\n'.join(lines) + '\n').encode('utf-8')
+    return io.BytesIO(payload), 'text/plain; charset=utf-8', 'txt'
+
+
+def _serialize_xml(rows):
+    import xml.etree.ElementTree as ET
+    root = ET.Element('PubmedArticleSet')
+    for d in rows:
+        article = ET.SubElement(root, 'PubmedArticle')
+        med = ET.SubElement(article, 'MedlineCitation')
+        if d['pmid']:
+            ET.SubElement(med, 'PMID').text = d['pmid']
+        art = ET.SubElement(med, 'Article')
+        ET.SubElement(art, 'ArticleTitle').text = d['title']
+        if d['abstract']:
+            abstract = ET.SubElement(art, 'Abstract')
+            ET.SubElement(abstract, 'AbstractText').text = d['abstract']
+        if d['authors']:
+            authors_el = ET.SubElement(art, 'AuthorList')
+            for author in re.split(r'[;,]\s*', d['authors']):
+                author = author.strip()
+                if author:
+                    a = ET.SubElement(authors_el, 'Author')
+                    ET.SubElement(a, 'CollectiveName').text = author
+        journal = ET.SubElement(art, 'Journal')
+        if d['journal']:
+            ET.SubElement(journal, 'Title').text = d['journal']
+        if d['year']:
+            issue = ET.SubElement(journal, 'JournalIssue')
+            pub_date = ET.SubElement(issue, 'PubDate')
+            ET.SubElement(pub_date, 'Year').text = d['year']
+        if d['doi']:
+            ET.SubElement(art, 'ELocationID', EIdType='doi').text = d['doi']
+        # Review-tool annotations
+        review = ET.SubElement(article, 'ReviewMetadata')
+        ET.SubElement(review, 'Label').text = d['label']
+        ET.SubElement(review, 'RelevanceScore').text = f"{d['relevance_score']:.4f}"
+        ET.SubElement(review, 'Iteration').text = str(d['iteration'])
+        if d['notes']:
+            ET.SubElement(review, 'Notes').text = d['notes']
+    payload = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+    return io.BytesIO(payload), 'application/xml', 'xml'
+
+
+_SERIALIZERS = {
+    'xlsx': _serialize_xlsx,
+    'csv': _serialize_csv,
+    'pubmed': _serialize_pubmed,
+    'xml': _serialize_xml,
+}
+
+
 @app.route('/api/projects/<int:project_id>/download', methods=['GET'])
 def download_results(project_id):
     user_id = request.headers.get('X-User-Id')
@@ -2718,64 +2892,67 @@ def download_results(project_id):
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
-    # NEW: Get sort_order parameter
+    # Sort order
     sort_order = request.args.get('sort_order', 'desc')
     if sort_order not in ['asc', 'desc']:
         sort_order = 'desc'
 
+    # Format
+    fmt = (request.args.get('format') or 'xlsx').lower()
+    if fmt not in _SERIALIZERS:
+        return jsonify({"error": f"Unsupported format '{fmt}'. Allowed: xlsx, csv, pubmed, xml."}), 400
+
+    # Row filter
+    row_filter = (request.args.get('row_filter') or 'all').lower()
+    if row_filter not in {'all', 'relevant', 'unlabeled', 'score_range'}:
+        return jsonify({"error": f"Unsupported row_filter '{row_filter}'. Allowed: all, relevant, unlabeled, score_range."}), 400
+
+    # Score range bounds (only used when row_filter == 'score_range')
+    score_min_pct = None
+    score_max_pct = None
+    if row_filter == 'score_range':
+        try:
+            score_min_pct = int(request.args.get('score_min', '')) if request.args.get('score_min') is not None else None
+            score_max_pct = int(request.args.get('score_max', '')) if request.args.get('score_max') is not None else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "score_min and score_max must be integers between 0 and 100."}), 400
+        if score_min_pct is None or score_max_pct is None:
+            return jsonify({"error": "score_range requires both score_min and score_max query params."}), 400
+        if not (0 <= score_min_pct <= 100 and 0 <= score_max_pct <= 100):
+            return jsonify({"error": "score_min and score_max must be between 0 and 100."}), 400
+        if score_min_pct > score_max_pct:
+            return jsonify({"error": "score_min cannot be greater than score_max."}), 400
+
     citations = Citation.query.filter_by(project_id=project_id).all()
 
-    output = io.BytesIO()
-    from openpyxl import Workbook
-    workbook = Workbook()
-    worksheet = workbook.active
-
-    # Write headers
-    headers = [
-        'Title', 'Abstract', 'Is Relevant', 'Iteration', 'Relevance Score'
-    ]
-    for col, header in enumerate(headers, start=1):
-        worksheet.cell(row=1, column=col, value=header)
-
-    # Get relevance scores for citations
     review_system = LiteratureReviewSystem(project_id)
     predictions = review_system.predict_relevance([{
         'title': c.title,
         'abstract': c.abstract
     } for c in citations])
 
-    # Create list of data and sort by relevance score
-    data_rows = []
-    for citation, prediction in zip(citations, predictions):
-        relevance_score = prediction.get('relevance_probability', 0) if 'error' not in prediction else 0
-        data_rows.append({
-            'title': citation.title,
-            'abstract': citation.abstract,
-            'is_relevant': 'Yes' if citation.is_relevant else 'No' if citation.is_relevant is not None else 'Unclassified',
-            'iteration': citation.iteration,
-            'relevance_score': relevance_score
-        })
+    rows = _build_export_rows(citations, predictions)
 
-    # NEW: Sort by relevance score based on sort_order parameter
-    reverse_sort = (sort_order == 'desc')
-    data_rows.sort(key=lambda x: x['relevance_score'], reverse=reverse_sort)
+    # Apply row filter
+    if row_filter == 'relevant':
+        rows = [r for r in rows if r['is_relevant'] is True]
+    elif row_filter == 'unlabeled':
+        rows = [r for r in rows if r['is_relevant'] is None]
+    elif row_filter == 'score_range':
+        lo = score_min_pct / 100.0
+        hi = score_max_pct / 100.0
+        rows = [r for r in rows if lo <= r['relevance_score'] <= hi]
 
-    # Write sorted data
-    for row, data in enumerate(data_rows, start=2):
-        worksheet.cell(row=row, column=1, value=data['title'])
-        worksheet.cell(row=row, column=2, value=data['abstract'])
-        worksheet.cell(row=row, column=3, value=data['is_relevant'])
-        worksheet.cell(row=row, column=4, value=data['iteration'])
-        worksheet.cell(row=row, column=5, value=data['relevance_score'])
+    # Sort
+    rows.sort(key=lambda x: x['relevance_score'], reverse=(sort_order == 'desc'))
 
-    workbook.save(output)
-    output.seek(0)
+    output, mimetype, ext = _SERIALIZERS[fmt](rows)
 
     return send_file(
         output,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        mimetype=mimetype,
         as_attachment=True,
-        download_name=f'project_{project_id}_results_{sort_order}.xlsx')
+        download_name=f'project_{project_id}_results_{sort_order}.{ext}')
 
 #  Add a new endpoint to get current sort capabilities
 @app.route('/api/projects/<int:project_id>/sort-info', methods=['GET'])
