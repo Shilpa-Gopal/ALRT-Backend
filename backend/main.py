@@ -1322,7 +1322,7 @@ def verify_reset_token():
 # for acception of multiple files from users
 def validate_file_format(filename):
     """Validate if file format is supported"""
-    return filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris'))
+    return filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris', '.nbib'))
 
 def process_single_file(file, temp_dir):
     """Process a single file and return DataFrame"""
@@ -1343,6 +1343,8 @@ def process_single_file(file, temp_dir):
             df = parse_xml_to_dataframe(temp_path, filename)
         elif filename.lower().endswith('.ris'):
             df = parse_ris_to_dataframe(temp_path, filename)
+        elif filename.lower().endswith('.nbib'):
+            df = parse_nbib_to_dataframe(temp_path, filename)
         else:
             raise ValueError(f"Unsupported file format: {filename}")
         
@@ -1634,6 +1636,106 @@ def parse_ris_to_dataframe(path, source_filename):
         return df
     except Exception as e:
         raise ValueError(f"Failed to parse RIS file: {str(e)}")
+
+def parse_nbib_to_dataframe(path, source_filename):
+    """
+    Parse PubMed .nbib (MEDLINE/PubMed tagged) export into a DataFrame with 'title' and 'abstract'.
+    Common tags:
+      TI - Title
+      AB - Abstract
+      FAU / AU - Author
+      JT / TA - Journal
+      DP - Date
+      AID - Article identifier (often DOI)
+    Records are separated by blank lines.
+    """
+    tag_line_re = re.compile(r'^([A-Z][A-Z0-9]{1,3})\s*-\s*(.*)$')
+    records = []
+    current = {
+        'title': '',
+        'abstract': '',
+        'authors': []
+    }
+    last_field = None
+
+    def flush_record():
+        nonlocal current
+        if current.get('title') or current.get('abstract'):
+            records.append({
+                'title': current.get('title', '').strip(),
+                'abstract': current.get('abstract', '').strip(),
+                'authors': '; '.join(current.get('authors', [])),
+                'journal': current.get('journal', '').strip(),
+                'date': current.get('date', '').strip(),
+                'doi': current.get('doi', '').strip(),
+                'keywords': current.get('keywords', '').strip()
+            })
+        current = {'title': '', 'abstract': '', 'authors': []}
+
+    def append_field(field, content):
+        if field == 'title':
+            current['title'] = (current.get('title', '') + (' ' if current.get('title') else '') + content).strip()
+        elif field == 'abstract':
+            current['abstract'] = (current.get('abstract', '') + (' ' if current.get('abstract') else '') + content).strip()
+
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for raw_line in f:
+                line = raw_line.rstrip('\n')
+                if not line.strip():
+                    flush_record()
+                    last_field = None
+                    continue
+
+                if line.startswith('      ') or (line.startswith(' ') and not tag_line_re.match(line.lstrip())):
+                    continuation = line.strip()
+                    if last_field in ('title', 'abstract') and continuation:
+                        append_field(last_field, continuation)
+                    continue
+
+                match = tag_line_re.match(line)
+                if not match:
+                    if last_field in ('title', 'abstract'):
+                        append_field(last_field, line.strip())
+                    continue
+
+                tag = match.group(1)
+                content = match.group(2).strip()
+
+                if tag == 'TI':
+                    last_field = 'title'
+                    append_field('title', content)
+                elif tag == 'AB':
+                    last_field = 'abstract'
+                    append_field('abstract', content)
+                elif tag in ('FAU', 'AU'):
+                    last_field = 'author'
+                    if content:
+                        current.setdefault('authors', []).append(content)
+                elif tag in ('JT', 'TA'):
+                    last_field = 'journal'
+                    current['journal'] = content
+                elif tag == 'DP':
+                    last_field = 'date'
+                    current['date'] = content
+                elif tag in ('OT', 'MH'):
+                    last_field = 'keyword'
+                    prev = current.get('keywords', '')
+                    current['keywords'] = (prev + '; ' + content).strip('; ').strip() if prev else content
+                elif tag == 'AID' and 'doi' in content.lower():
+                    last_field = 'doi'
+                    current['doi'] = content.split('[doi]', 1)[0].strip() or content
+                else:
+                    last_field = None
+
+        flush_record()
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df['source_file'] = source_filename
+        return df
+    except Exception as e:
+        raise ValueError(f"Failed to parse NBIB file: {str(e)}")
 
 def merge_multiple_files(files):
     """Process and merge multiple files into a single DataFrame"""
@@ -2036,10 +2138,10 @@ def add_citations(project_id):
                 app.logger.error("No file provided or empty filename")
                 return jsonify({"error": "No file provided"}), 400
 
-            if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris')):
+            if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.enw', '.xml', '.ris', '.nbib')):
                 app.logger.error(f"Invalid file format: {file.filename}")
                 return jsonify({
-                    "error": "Invalid file format. Supported: CSV, Excel, EndNote (.enw), XML, and RIS (.ris).",
+                    "error": "Invalid file format. Supported: CSV, Excel, EndNote (.enw), XML, RIS (.ris), and PubMed (.nbib).",
                     "filename": file.filename
                 }), 400
 
