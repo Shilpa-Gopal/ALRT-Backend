@@ -43,43 +43,72 @@ class LiteratureReviewSystem:
             'iteration': c.iteration
         } for c in citations])
 
-    def prepare_features(self, data, project=None):
-        text_data = data['title'] + ' ' + data['abstract']
-        
-        # Base TF-IDF features
-        base_features = self.vectorizer.fit_transform(text_data)
-        
-        # Add include keyword features if project keywords are available
+    def _normalize_keyword_list(self, keywords):
+        """Accept include keywords stored as strings or {word: ...} objects."""
+        normalized = []
+        for kw in keywords or []:
+            if isinstance(kw, str):
+                word = kw.strip()
+            elif isinstance(kw, dict):
+                word = str(kw.get('word', '')).strip()
+            else:
+                word = str(kw).strip()
+            if word:
+                normalized.append(word.lower())
+        return normalized
+
+    def fit_vectorizer(self, corpus_data=None):
+        """Fit TF-IDF vectorizer once on the full project corpus before train/predict."""
+        if corpus_data is None:
+            corpus_data = self.get_project_data()
+        text_data = (
+            corpus_data['title'].fillna('').astype(str) + ' ' +
+            corpus_data['abstract'].fillna('').astype(str)
+        )
+        self.vectorizer.fit(text_data)
+
+    def prepare_features(self, data, project=None, fit_vectorizer=False):
+        text_data = data['title'].fillna('').astype(str) + ' ' + data['abstract'].fillna('').astype(str)
+
+        if fit_vectorizer:
+            base_features = self.vectorizer.fit_transform(text_data)
+        else:
+            base_features = self.vectorizer.transform(text_data)
+
         if project and project.keywords and project.keywords.get('include'):
-            include_keywords = [kw.lower() for kw in project.keywords.get('include', [])]
-            
-            # Create include keyword features
+            include_keywords = self._normalize_keyword_list(project.keywords.get('include', []))
+
             include_features = []
             for _, row in data.iterrows():
                 text = f"{row['title']} {row['abstract']}".lower()
                 keyword_scores = []
-                
+
                 for keyword in include_keywords:
-                    # Count occurrences and normalize by text length
                     occurrences = text.count(keyword)
                     normalized_score = occurrences / max(len(text.split()), 1)
                     keyword_scores.append(normalized_score)
-                
+
                 include_features.append(keyword_scores)
-            
-            # Convert to sparse matrix and combine with base features
+
             include_matrix = sparse.csr_matrix(include_features)
             features = sparse.hstack([base_features, include_matrix])
-            
+
             self.logger.info(f"Enhanced features with {len(include_keywords)} include keywords")
             return features
-        
+
         return base_features
+
+    @staticmethod
+    def _positive_class_probability(proba_row):
+        """Return P(relevant); handles single-class edge cases from sklearn/xgboost."""
+        if len(proba_row) > 1:
+            return float(proba_row[1])
+        return float(proba_row[0])
 
     def predict_relevance(self, citations):
         try:
             from .models import Project
-            
+
             new_data = pd.DataFrame(citations)
             data = self.get_project_data()
             labeled_data = data[data['is_relevant'].notna()]
@@ -87,9 +116,10 @@ class LiteratureReviewSystem:
             if len(labeled_data) < 10:
                 return [{"error": "Not enough labeled data for prediction"}] * len(citations)
 
-            # Get project for keyword enhancement
             project = Project.query.get(self.project_id)
 
+            # Fit vectorizer on full corpus so unlabeled citations share the same vocabulary
+            self.fit_vectorizer(data)
             X = self.prepare_features(labeled_data, project)
             y = labeled_data['is_relevant'].astype(int)
 
@@ -99,11 +129,15 @@ class LiteratureReviewSystem:
             X_new = self.prepare_features(new_data, project)
             predictions = model.predict_proba(X_new)
 
-            return [{
-                "citation_index": i,
-                "relevance_probability": float(pred[1]),
-                "is_relevant": bool(pred[1] > self.optimal_threshold)
-            } for i, pred in enumerate(predictions)]
+            results = []
+            for i, pred in enumerate(predictions):
+                prob = self._positive_class_probability(pred)
+                results.append({
+                    "citation_index": i,
+                    "relevance_probability": prob,
+                    "is_relevant": bool(prob > self.optimal_threshold),
+                })
+            return results
 
         except Exception as e:
             self.logger.error(f"Prediction error: {str(e)}")
@@ -149,6 +183,7 @@ class LiteratureReviewSystem:
             if include_keywords:
                 self.logger.info(f"Using {len(include_keywords)} include keywords for feature enhancement: {include_keywords}")
 
+            self.fit_vectorizer(data)
             X = self.prepare_features(labeled_data, project)
             y = labeled_data['is_relevant'].astype(int)
 

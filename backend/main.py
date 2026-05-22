@@ -2730,7 +2730,14 @@ def filter_citations(project_id):
             # Combine citations with their relevance scores
             citations_with_scores = []
             for citation, prediction in zip(filtered_citations, predictions):
-                relevance_score = prediction.get('relevance_probability', 0) if 'error' not in prediction else 0
+                if 'error' in prediction:
+                    app.logger.warning(
+                        "Relevance prediction failed for citation %s: %s",
+                        citation.id, prediction.get('error')
+                    )
+                    relevance_score = None
+                else:
+                    relevance_score = prediction.get('relevance_probability', 0)
                 citations_with_scores.append({
                     'citation': citation,
                     'relevance_score': relevance_score
@@ -2738,7 +2745,13 @@ def filter_citations(project_id):
 
             # Sort based on sort_order parameter
             reverse_sort = (sort_order == 'desc')
-            citations_with_scores.sort(key=lambda x: x['relevance_score'], reverse=reverse_sort)
+            def _relevance_sort_key(item):
+                score = item['relevance_score']
+                if score is None:
+                    return (1, 0.0)
+                return (0, score)
+
+            citations_with_scores.sort(key=_relevance_sort_key, reverse=reverse_sort)
             
             # Extract sorted citations
             sorted_citations = [item['citation'] for item in citations_with_scores]
@@ -2754,7 +2767,10 @@ def filter_citations(project_id):
                     "is_relevant": citation.is_relevant,
                     "iteration": citation.iteration,
                     "is_duplicate": getattr(citation, 'is_duplicate', False),
-                    "relevance_score": round(item['relevance_score'], 4),
+                    "relevance_score": (
+                        round(item['relevance_score'], 4)
+                        if item['relevance_score'] is not None else None
+                    ),
                     "included_by_keywords": True
                 })
 
